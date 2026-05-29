@@ -1499,16 +1499,20 @@ async function renderUsers(view) {
     if (!hasRole('owner','admin')) { view.innerHTML = `<div class="empty">Нет доступа</div>`; return; }
     const [users, admins] = await Promise.all([loadUsers(), loadAdmins()]);
     State.cache.users = users; State.cache.admins = admins;
+    const canManageUsers = hasRole('owner');
 
     view.innerHTML = `
-        <h2>Пользователи / Администраторы доступа</h2>
-        <div class="panel">
-            <div class="panel-header">
-                <h3>Профили пользователей</h3>
-                ${hasRole('owner') ? `<button class="btn btn-primary" id="btn-add-user">+ Создать профиль</button>`:''}
+        <div class="liverp-hero">
+            <div>
+                <h2>Пользователи системы</h2>
+                <p class="muted">Аккаунты для входа в панель. UUID больше не вводится вручную: owner создаёт пользователя прямо здесь через Edge Function <code>manage-user</code>.</p>
             </div>
+            ${canManageUsers ? `<button class="btn btn-primary" id="btn-add-user">+ Создать пользователя</button>`:''}
+        </div>
+        <div class="panel">
+            <div class="panel-header"><h3>Список пользователей</h3></div>
             <div class="toolbar">
-                <input id="u-search" placeholder="Поиск..."/>
+                <input id="u-search" placeholder="Поиск по email / имени..."/>
                 <select id="u-role">
                     <option value="">Все роли</option>
                     <option value="owner">owner</option>
@@ -1519,29 +1523,29 @@ async function renderUsers(view) {
             </div>
             <div class="table-wrap">
                 <table class="data" id="u-table"><thead><tr>
-                    <th>ID</th><th>Email</th><th>Имя</th><th>Роль</th><th>Админ</th>
+                    <th>ID</th><th>Email</th><th>Имя</th><th>Роль</th><th>Привязка к составу</th>
                     <th>Активен</th><th>Создан</th><th style="width:220px">Действия</th>
                 </tr></thead><tbody></tbody></table>
             </div>
             <p class="muted" style="margin-top:10px">
-                Поле <b>id</b> — это UUID из <code>auth.users</code> (создаётся в Supabase Dashboard или Edge Function).
-                Здесь создаётся/редактируется только <b>профиль</b>.
+                <b>Привязка к составу</b> — это связь аккаунта входа с карточкой администратора в разделе «Состав администрации».
+                Она нужна, чтобы пользователь, его ранг, отдел, наказания, выплаты и активность относились к одному человеку.
             </p>
         </div>
     `;
 
     const render = () => {
-        const q = $('#u-search').value.toLowerCase();
+        const q = ($('#u-search').value || '').toLowerCase();
         const r = $('#u-role').value;
         const rows = users.filter(u => {
             if (r && u.access_role !== r) return false;
-            if (q && !((u.email||'').toLowerCase().includes(q) || (u.display_name||'').toLowerCase().includes(q))) return false;
+            if (q && !(`${u.email||''} ${u.display_name||''}`.toLowerCase().includes(q))) return false;
             return true;
         });
         $('#u-table tbody').innerHTML = rows.map(u => {
             const admin = admins.find(a => a.id === u.admin_id);
             return `<tr data-id="${u.id}">
-                <td><code style="font-size:11px">${escapeHtml(u.id.slice(0,8))}…</code></td>
+                <td><code style="font-size:11px">${escapeHtml(String(u.id || '').slice(0,8))}…</code></td>
                 <td>${escapeHtml(u.email||'—')}</td>
                 <td>${escapeHtml(u.display_name||'—')}</td>
                 <td>${roleBadge(u.access_role)}</td>
@@ -1549,8 +1553,10 @@ async function renderUsers(view) {
                 <td>${u.is_active ? '<span class="badge success">Да</span>' : '<span class="badge danger">Нет</span>'}</td>
                 <td>${fmtDate(u.created_at)}</td>
                 <td class="actions">
-                    <button class="btn btn-sm" data-act="edit">✎</button>
-                    <button class="btn btn-sm" data-act="toggle">${u.is_active?'⏸':'▶'}</button>
+                    ${canManageUsers ? `
+                        <button class="btn btn-sm" data-act="edit">✎</button>
+                        <button class="btn btn-sm" data-act="toggle">${u.is_active?'⏸':'▶'}</button>
+                    ` : '<span class="muted">только просмотр</span>'}
                 </td>
             </tr>`;
         }).join('') || `<tr><td colspan="8" class="muted">Нет данных</td></tr>`;
@@ -1559,20 +1565,39 @@ async function renderUsers(view) {
     $('#u-search').oninput = render;
     $('#u-role').onchange = render;
 
-    if (hasRole('owner')) {
-        $('#btn-add-user').onclick = () => userProfileModal(null, admins, () => handleRoute(true));
+    if (canManageUsers) {
+        $('#btn-add-user').onclick = () => userProfileModal(null, admins, (saved) => {
+            if (saved && !users.find(x => x.id === saved.id)) users.unshift(saved);
+            handleRoute(true);
+        });
+
+        $('#u-table tbody').addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-act]'); if (!btn) return;
+            const id = btn.closest('tr').dataset.id;
+            const u = users.find(x => x.id === id);
+            if (!u) return;
+
+            if (btn.dataset.act === 'toggle') {
+                try {
+                    const saved = await adminUpdateUser({
+                        id: u.id,
+                        email: u.email,
+                        display_name: u.display_name,
+                        access_role: u.access_role,
+                        admin_id: u.admin_id,
+                        is_active: !u.is_active
+                    });
+                    Object.assign(u, saved);
+                    render();
+                    toast('Готово','success');
+                } catch(er) {
+                    toast('Ошибка: '+er.message,'danger',7000);
+                }
+            } else if (btn.dataset.act === 'edit') {
+                userProfileModal(u, admins, (upd) => { Object.assign(u, upd); render(); });
+            }
+        });
     }
-    $('#u-table tbody').addEventListener('click', async (e) => {
-        const btn = e.target.closest('button[data-act]'); if (!btn) return;
-        const id = btn.closest('tr').dataset.id;
-        const u = users.find(x => x.id === id);
-        if (btn.dataset.act === 'toggle') {
-            try { const upd = await disableUser(id, u.is_active); Object.assign(u, upd); render(); toast('Готово','success'); }
-            catch(er){ toast('Ошибка: '+er.message,'danger'); }
-        } else if (btn.dataset.act === 'edit') {
-            userProfileModal(u, admins, (upd) => { Object.assign(u, upd); render(); });
-        }
-    });
 
     render();
 }
@@ -1580,13 +1605,17 @@ async function renderUsers(view) {
 function userProfileModal(u, admins, onSave) {
     const isNew = !u;
     openModal({
-        title: isNew ? 'Создать профиль пользователя' : 'Профиль пользователя',
+        title: isNew ? 'Создать пользователя' : 'Редактирование пользователя',
         body: `
             <div class="form-grid">
-                <div class="form-row"><label>UUID пользователя (из auth.users) *</label>
-                    <input id="up-id" value="${u?.id||''}" ${u?'readonly':''} placeholder="00000000-0000-..."/></div>
-                <div class="form-row"><label>Email</label><input id="up-email" value="${u?.email||''}"/></div>
-                <div class="form-row"><label>Имя / ник</label><input id="up-name" value="${u?.display_name||''}"/></div>
+                ${isNew ? '' : `
+                <div class="form-row"><label>ID пользователя</label>
+                    <input id="up-id" value="${escapeHtml(u?.id||'')}" readonly /></div>`}
+                <div class="form-row"><label>Email для входа *</label>
+                    <input id="up-email" type="email" value="${escapeHtml(u?.email||'')}" placeholder="user@example.com"/></div>
+                <div class="form-row"><label>Пароль ${isNew ? '*' : '(оставьте пустым, если не менять)'}</label>
+                    <input id="up-password" type="password" autocomplete="new-password" placeholder="${isNew ? 'Минимум 6 символов' : 'Новый пароль'}"/></div>
+                <div class="form-row"><label>Имя / ник</label><input id="up-name" value="${escapeHtml(u?.display_name||'')}"/></div>
                 <div class="form-row"><label>Роль</label>
                     <select id="up-role">
                         <option value="owner"       ${u?.access_role==='owner'?'selected':''}>owner</option>
@@ -1597,7 +1626,7 @@ function userProfileModal(u, admins, onSave) {
                 <div class="form-row"><label>Привязать аккаунт к записи в составе</label>
                     <select id="up-admin">
                         <option value="">— нет —</option>
-                        ${admins.map(a => `<option value="${a.id}" ${u?.admin_id===a.id?'selected':''}>${escapeHtml(a.display_name)}</option>`).join('')}
+                        ${admins.map(a => `<option value="${a.id}" ${u?.admin_id===a.id?'selected':''}>${escapeHtml(a.display_name)}${a.rank ? ` — ранг ${a.rank}` : ''}</option>`).join('')}
                     </select></div>
                 <div class="form-row"><label>Активен</label>
                     <select id="up-active">
@@ -1606,32 +1635,45 @@ function userProfileModal(u, admins, onSave) {
                     </select></div>
             </div>
             <p class="muted" style="margin-top:10px">
-                💡 Чтобы создать сам Auth-аккаунт — перейдите в Supabase Dashboard → Authentication → Add user,
-                скопируйте оттуда UUID и вставьте сюда.
+                UUID вручную больше не нужен. При создании Edge Function <code>manage-user</code> сама создаёт Auth-аккаунт в Supabase и профиль в <code>user_profiles</code>.
             </p>
         `,
         footer: `<button class="btn" data-cancel>Отмена</button>
-                 <button class="btn btn-primary" data-save>Сохранить</button>`
+                 <button class="btn btn-primary" data-save>${isNew ? 'Создать' : 'Сохранить'}</button>`
     });
     $('[data-cancel]').onclick = closeModal;
     $('[data-save]').onclick = async () => {
-        const id = $('#up-id').value.trim();
-        if (!id) return toast('Укажите UUID','warning');
+        const email = $('#up-email').value.trim();
+        const password = $('#up-password').value;
+        if (!email) return toast('Укажите email','warning');
+        if (isNew && password.length < 6) return toast('Пароль должен быть минимум 6 символов','warning');
+        if (!isNew && password && password.length < 6) return toast('Новый пароль должен быть минимум 6 символов','warning');
+
         const payload = {
-            id,
-            email: $('#up-email').value.trim() || null,
+            id: u?.id,
+            email,
+            password: password || undefined,
             display_name: $('#up-name').value.trim() || null,
             access_role: $('#up-role').value,
             admin_id: $('#up-admin').value || null,
             is_active: $('#up-active').value === 'true'
         };
+
         try {
-            const saved = await saveUserProfile(payload);
-            onSave(saved); closeModal(); toast('Сохранено','success');
-        } catch (e) { toast('Ошибка: '+e.message,'danger'); }
+            const saved = isNew ? await adminCreateUser(payload) : await adminUpdateUser(payload);
+            onSave(saved);
+            closeModal();
+            toast(isNew ? 'Пользователь создан' : 'Пользователь обновлён','success');
+        } catch (e) {
+            const msg = e.message || String(e);
+            if (msg.includes('FunctionsFetchError') || msg.includes('not found')) {
+                toast('Edge Function manage-user не настроена или не задеплоена', 'danger', 7000);
+            } else {
+                toast('Ошибка: '+msg,'danger', 7000);
+            }
+        }
     };
 }
-
 
 // =====================================================================
 // 9.5 Отделы / разделы

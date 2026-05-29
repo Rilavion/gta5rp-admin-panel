@@ -17,7 +17,8 @@ const State = {
         promotionSettings: [],
         promotions: [],
         payments: [],
-        users: []
+        users: [],
+        departments: []
     },
     currentCsvRows: null,    // данные для последнего экспорта CSV
     currentCsvName: 'export.csv'
@@ -55,6 +56,77 @@ const DEFAULT_APPEARANCE = {
     bgEffect: 'orbs',       // orbs / grid / waves / off
     density: 'comfortable'  // comfortable / compact
 };
+
+const DEFAULT_DEPARTMENTS = [
+    { name: 'Общая администрация', show_calls: true, show_reports: true, show_trainings: true, show_activity: true, show_punishments: true, sort_order: 10 },
+    { name: 'Отдел набора', show_calls: true, show_reports: false, show_trainings: true, show_activity: true, show_punishments: true, sort_order: 20 },
+    { name: 'Руководство', show_calls: true, show_reports: true, show_trainings: true, show_activity: true, show_punishments: true, sort_order: 30 }
+];
+
+function normalizeDepartment(dep = {}) {
+    return {
+        id: dep.id || null,
+        name: dep.name || dep.branch || 'Общая администрация',
+        show_calls: dep.show_calls !== false,
+        show_reports: dep.show_reports !== false,
+        show_trainings: dep.show_trainings !== false,
+        show_activity: dep.show_activity !== false,
+        show_punishments: dep.show_punishments !== false,
+        sort_order: Number(dep.sort_order || 100)
+    };
+}
+
+function getDepartmentConfig(name, departments = []) {
+    const depName = name || 'Общая администрация';
+    return normalizeDepartment(departments.find(d => d.name === depName) || DEFAULT_DEPARTMENTS.find(d => d.name === depName) || { name: depName });
+}
+
+function getDepartmentsFromAdmins(admins = [], departments = []) {
+    const map = new Map();
+    [...DEFAULT_DEPARTMENTS, ...departments.map(normalizeDepartment)].forEach(d => map.set(d.name, normalizeDepartment(d)));
+    admins.forEach(a => {
+        const name = a.branch || 'Общая администрация';
+        if (!map.has(name)) map.set(name, normalizeDepartment({ name, sort_order: 999 }));
+    });
+    return [...map.values()].sort((a,b) => (a.sort_order||100) - (b.sort_order||100) || a.name.localeCompare(b.name));
+}
+
+function adminCallsCount(admin, calls = []) {
+    return calls.filter(c => c.trainer_admin_id === admin.id || (c.trainer && c.trainer.id === admin.id)).length;
+}
+
+function adminTrainingsCount(admin, calls = []) {
+    return calls.filter(c => (c.trainer_admin_id === admin.id || (c.trainer && c.trainer.id === admin.id)) && c.training_replay_url).length;
+}
+
+function adminActivePunishments(admin, discipline = []) {
+    return discipline.filter(d => d.admin_id === admin.id && d.status === 'active').length;
+}
+
+function adminReportsCount(admin) {
+    return Number(admin.accepted_reports || 0);
+}
+
+function metricsHeader(dep) {
+    const cols = [];
+    if (dep.show_activity) cols.push('<th class="num">Активность</th>');
+    if (dep.show_calls) cols.push('<th class="num">Обзвоны</th>');
+    if (dep.show_trainings) cols.push('<th class="num">Обучения</th>');
+    if (dep.show_reports) cols.push('<th class="num">Рапорты</th>');
+    if (dep.show_punishments) cols.push('<th class="num">Наказания</th>');
+    return cols.join('');
+}
+
+function metricsCells(admin, dep, calls = [], discipline = []) {
+    const cells = [];
+    if (dep.show_activity) cells.push(`<td class="num">${Number(admin.activity_percent || 0)}%</td>`);
+    if (dep.show_calls) cells.push(`<td class="num">${adminCallsCount(admin, calls)}</td>`);
+    if (dep.show_trainings) cells.push(`<td class="num">${adminTrainingsCount(admin, calls)}</td>`);
+    if (dep.show_reports) cells.push(`<td class="num">${adminReportsCount(admin)}</td>`);
+    if (dep.show_punishments) cells.push(`<td class="num">${adminActivePunishments(admin, discipline)}</td>`);
+    return cells.join('');
+}
+
 
 function loadAppearanceSettings() {
     try {
@@ -113,6 +185,7 @@ const ROUTES = {
     stats:         { title: 'Статистика',              roles: ['owner','admin','interviewer','viewer'] },
     users:         { title: 'Пользователи',            roles: ['owner','admin'] },
     admins:        { title: 'Состав администрации',    roles: ['owner','admin','interviewer','viewer'] },
+    departments:   { title: 'Отделы / разделы',        roles: ['owner','admin','interviewer','viewer'] },
     leadership:    { title: 'Руководство',             roles: ['owner','admin','interviewer','viewer'] },
     discipline:    { title: 'Дисциплинарные наказания',roles: ['owner','admin','viewer'] },
     promotion:     { title: 'Система повышения',       roles: ['owner','admin','viewer'] },
@@ -429,6 +502,7 @@ async function handleRoute(force=false) {
             case 'stats':         return await renderStats(view);
             case 'users':         return await renderUsers(view);
             case 'admins':        return await renderAdmins(view);
+            case 'departments':   return await renderDepartments(view);
             case 'leadership':    return await renderLeadership(view);
             case 'discipline':    return await renderDiscipline(view);
             case 'promotion':     return await renderPromotion(view);
@@ -1558,105 +1632,217 @@ function userProfileModal(u, admins, onSave) {
     };
 }
 
-// =====================================================================
-// 10. Состав администрации
-// =====================================================================
-async function renderAdmins(view) {
-    const [admins, calls, discipline] = await Promise.all([
-        loadAdmins(true), loadCallHistory(), loadDisciplineRecords()
-    ]);
-    State.cache.admins = admins; State.cache.calls = calls; State.cache.discipline = discipline;
 
-    const canEdit = hasRole('owner','admin');
+// =====================================================================
+// 9.5 Отделы / разделы
+// =====================================================================
+async function renderDepartments(view) {
+    const [departments, admins, calls, discipline] = await Promise.all([
+        loadDepartments(), loadAdmins(true), loadCallHistory(), loadDisciplineRecords()
+    ]);
+    const canEdit = hasRole('owner');
+    const all = getDepartmentsFromAdmins(admins, departments);
 
     view.innerHTML = `
-        <h2>Состав администрации</h2>
-        <div class="panel">
-            <div class="panel-header">
-                <h3>Все администраторы (${admins.length})</h3>
-                ${canEdit ? `<button class="btn btn-primary" id="btn-add-admin">+ Добавить</button>` : ''}
-            </div>
-            <div class="toolbar">
-                <input id="a-search" placeholder="Поиск..."/>
-                <select id="a-pos"><option value="">Все ранги / должности</option>
-                ${[...new Set(admins.map(a=>adminPositionLabel(a)).filter(Boolean))].map(p=>`<option>${escapeHtml(p)}</option>`).join('')}
-                </select>
-                <select id="a-active">
-                    <option value="">Все</option><option value="true">Активные</option><option value="false">Архив</option>
-                </select>
-            </div>
-            <div class="table-wrap">
-                <table class="data" id="a-table"><thead><tr>
-                    <th>№</th><th>Имя</th><th>Discord</th><th>Ранг</th><th>Кастомная должность</th><th>Отдел / направление</th>
-                    <th>Вступил</th><th>Повышение</th><th class="num">Активность</th>
-                    <th class="num">Наказания</th><th class="num">Обзвоны</th><th class="num">Обучения</th>
-                    <th>Статус</th><th style="width:130px">Действия</th>
-                </tr></thead><tbody></tbody></table>
-            </div>
+        <div class="liverp-hero">
+            <div><h2>Отделы и разделы</h2><p class="muted">Owner может создавать свои отделы и выбирать, какие показатели показывать в составе и системе повышений.</p></div>
+            ${canEdit ? `<button class="btn btn-primary" id="btn-add-dep">+ Создать отдел</button>` : ''}
+        </div>
+        <div class="department-grid">
+            ${all.map(dep => {
+                const group = admins.filter(a => (a.branch || 'Общая администрация') === dep.name);
+                return `<div class="panel department-card" data-id="${dep.id||''}" data-name="${escapeHtml(dep.name)}">
+                    <div class="panel-header"><h3>${escapeHtml(dep.name)}</h3>${canEdit && dep.id ? `<button class="btn btn-sm" data-act="edit">✎</button>` : ''}</div>
+                    <div class="cards mini-cards">
+                        <div class="card"><div class="card-label">Людей</div><div class="card-value">${group.length}</div></div>
+                        <div class="card"><div class="card-label">Обзвонов</div><div class="card-value">${group.reduce((s,a)=>s+adminCallsCount(a,calls),0)}</div></div>
+                        <div class="card"><div class="card-label">Рапортов</div><div class="card-value">${group.reduce((s,a)=>s+adminReportsCount(a),0)}</div></div>
+                    </div>
+                    <div class="department-toggles big">
+                        <span class="mini-chip ${dep.show_calls?'on':'off'}">обзвоны</span>
+                        <span class="mini-chip ${dep.show_reports?'on':'off'}">рапорты</span>
+                        <span class="mini-chip ${dep.show_trainings?'on':'off'}">обучение</span>
+                        <span class="mini-chip ${dep.show_activity?'on':'off'}">активность</span>
+                        <span class="mini-chip ${dep.show_punishments?'on':'off'}">наказания</span>
+                    </div>
+                </div>`;
+            }).join('')}
         </div>
     `;
 
+    if (canEdit) {
+        $('#btn-add-dep').onclick = () => departmentModal(null, () => handleRoute(true));
+        view.querySelector('.department-grid').addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-act="edit"]'); if (!btn) return;
+            const card = btn.closest('.department-card');
+            const dep = departments.find(d => d.id === card.dataset.id) || all.find(d => d.name === card.dataset.name);
+            departmentModal(dep, () => handleRoute(true));
+        });
+    }
+}
+
+function departmentModal(dep, onSave) {
+    const isNew = !dep?.id;
+    dep = normalizeDepartment(dep || {});
+    openModal({
+        title: isNew ? 'Создать отдел' : 'Редактировать отдел',
+        body: `
+            <div class="form-grid">
+                <div class="form-row"><label>Название отдела *</label><input id="dep-name" value="${escapeHtml(dep.name||'')}" placeholder="Например: Отдел репортов"/></div>
+                <div class="form-row"><label>Порядок</label><input id="dep-order" type="number" value="${dep.sort_order||100}"/></div>
+                <label class="check-row"><input type="checkbox" id="dep-calls" ${dep.show_calls?'checked':''}/> Показывать обзвоны</label>
+                <label class="check-row"><input type="checkbox" id="dep-reports" ${dep.show_reports?'checked':''}/> Показывать рапорты</label>
+                <label class="check-row"><input type="checkbox" id="dep-trainings" ${dep.show_trainings?'checked':''}/> Показывать обучение</label>
+                <label class="check-row"><input type="checkbox" id="dep-activity" ${dep.show_activity?'checked':''}/> Показывать активность</label>
+                <label class="check-row"><input type="checkbox" id="dep-punishments" ${dep.show_punishments?'checked':''}/> Показывать наказания</label>
+            </div>
+        `,
+        footer: `<button class="btn" data-cancel>Отмена</button><button class="btn btn-primary" data-save>Сохранить</button>`
+    });
+    $('[data-cancel]').onclick = closeModal;
+    $('[data-save]').onclick = async () => {
+        const payload = {
+            id: dep.id || undefined,
+            name: $('#dep-name').value.trim(),
+            sort_order: parseInt($('#dep-order').value)||100,
+            show_calls: $('#dep-calls').checked,
+            show_reports: $('#dep-reports').checked,
+            show_trainings: $('#dep-trainings').checked,
+            show_activity: $('#dep-activity').checked,
+            show_punishments: $('#dep-punishments').checked
+        };
+        if (!payload.name) return toast('Название отдела обязательно','warning');
+        try { await saveDepartment(payload); closeModal(); toast('Отдел сохранён','success'); onSave(); }
+        catch(e) { toast('Ошибка: '+e.message,'danger'); }
+    };
+}
+
+// =====================================================================
+// 10. Состав администрации
+// =====================================================================
+
+async function renderAdmins(view) {
+    const [admins, calls, discipline, departments] = await Promise.all([
+        loadAdmins(true), loadCallHistory(), loadDisciplineRecords(), loadDepartments()
+    ]);
+    State.cache.admins = admins;
+    State.cache.calls = calls;
+    State.cache.discipline = discipline;
+    State.cache.departments = departments;
+
+    const canEdit = hasRole('owner','admin');
+    const allDepartments = getDepartmentsFromAdmins(admins, departments);
+
+    view.innerHTML = `
+        <div class="liverp-hero admin-hero">
+            <div>
+                <h2>Состав администрации LiveRP</h2>
+                <p class="muted">Единая таблица всей администрации: ранги, кастомные должности, отделы, активность, рапорты, обзвоны, обучения и наказания.</p>
+            </div>
+            <div class="hero-actions">
+                ${canEdit ? `<button class="btn btn-primary" id="btn-add-admin">+ Добавить администратора</button>` : ''}
+                ${hasRole('owner','admin') ? `<a class="btn" href="#departments">⚙ Настроить отделы</a>` : ''}
+            </div>
+        </div>
+        <div class="panel">
+            <div class="panel-header"><h3>Фильтры</h3></div>
+            <div class="toolbar">
+                <input id="a-search" placeholder="Поиск по имени, Discord, нику..." />
+                <select id="a-dep"><option value="">Все отделы</option>${allDepartments.map(d=>`<option>${escapeHtml(d.name)}</option>`).join('')}</select>
+                <select id="a-rank"><option value="">Все ранги</option>${Array.from({length:11},(_,i)=>i+1).map(n=>`<option value="${n}">Ранг ${n}</option>`).join('')}</select>
+                <select id="a-active"><option value="">Все</option><option value="true">Активные</option><option value="false">Архив</option></select>
+            </div>
+        </div>
+        <div id="admin-department-sections"></div>
+    `;
+
     const render = () => {
-        const q = $('#a-search').value.toLowerCase();
-        const pos = $('#a-pos').value;
+        const q = ($('#a-search').value || '').toLowerCase();
+        const depFilter = $('#a-dep').value;
+        const rankFilter = $('#a-rank').value;
         const act = $('#a-active').value;
         const rows = admins.filter(a => {
-            if (pos && adminPositionLabel(a) !== pos) return false;
+            if (depFilter && (a.branch || 'Общая администрация') !== depFilter) return false;
+            if (rankFilter && String(a.rank || '') !== rankFilter) return false;
             if (act !== '' && String(a.is_active) !== act) return false;
-            if (q && !(
-                (a.display_name||'').toLowerCase().includes(q) ||
-                (a.discord||'').toLowerCase().includes(q) ||
-                (a.game_nick||'').toLowerCase().includes(q)
-            )) return false;
+            if (q && !(`${a.display_name||''} ${a.discord||''} ${a.game_nick||''} ${a.custom_position||''} ${a.current_position||''} ${a.branch||''}`.toLowerCase().includes(q))) return false;
             return true;
         });
-        $('#a-table tbody').innerHTML = rows.map((a,i) => {
-            const punsActive = discipline.filter(d => d.admin_id === a.id && d.status === 'active').length;
-            const myCalls = calls.filter(c => c.trainer_admin_id === a.id);
-            return `<tr data-id="${a.id}">
-                <td>${i+1}</td>
-                <td>${escapeHtml(a.display_name)}</td>
-                <td>${escapeHtml(a.discord||'—')}</td>
-                <td>${a.rank ? `<span class="rank-pill">R${a.rank}</span>` : '<span class="muted">—</span>'}</td>
-                <td>${escapeHtml(a.custom_position || a.current_position || '—')}</td>
-                <td>${escapeHtml(a.branch||'Общая администрация')}</td>
-                <td>${fmtDate(a.joined_at)}</td>
-                <td>${fmtDate(a.last_promotion_at)}</td>
-                <td class="num">${a.activity_percent||0}%</td>
-                <td class="num">${punsActive}</td>
-                <td class="num">${myCalls.length}</td>
-                <td class="num">${myCalls.filter(c=>c.training_replay_url).length}</td>
-                <td>${a.is_active ? '<span class="badge success">Активен</span>' : '<span class="badge neutral">Архив</span>'}</td>
-                <td class="actions">
-                    <button class="btn btn-sm" data-act="view">👁</button>
-                    ${canEdit?`<button class="btn btn-sm" data-act="edit">✎</button>`:''}
-                    ${canEdit?`<button class="btn btn-sm btn-danger" data-act="arch">📦</button>`:''}
-                </td>
-            </tr>`;
-        }).join('') || `<tr><td colspan="14" class="muted">Нет данных</td></tr>`;
+
+        const sections = getDepartmentsFromAdmins(rows, departments).filter(dep => rows.some(a => (a.branch || 'Общая администрация') === dep.name));
+        $('#admin-department-sections').innerHTML = sections.map(dep => {
+            const group = rows.filter(a => (a.branch || 'Общая администрация') === dep.name)
+                .sort((a,b)=>(Number(b.rank)||0)-(Number(a.rank)||0)||String(a.display_name).localeCompare(String(b.display_name)));
+            const totalCalls = group.reduce((s,a)=>s+adminCallsCount(a,calls),0);
+            const totalReports = group.reduce((s,a)=>s+adminReportsCount(a),0);
+            const avgActivity = group.length ? Math.round(group.reduce((s,a)=>s+Number(a.activity_percent||0),0)/group.length) : 0;
+            return `<div class="panel department-panel">
+                <div class="panel-header department-head">
+                    <div>
+                        <h3>${escapeHtml(dep.name)} <span class="badge accent">${group.length}</span></h3>
+                        <div class="muted">Обзвоны: ${totalCalls} · Рапорты: ${totalReports} · Средняя активность: ${avgActivity}%</div>
+                    </div>
+                    <div class="department-toggles">
+                        ${dep.show_calls?'<span class="mini-chip">обзвоны</span>':''}
+                        ${dep.show_reports?'<span class="mini-chip">рапорты</span>':''}
+                        ${dep.show_trainings?'<span class="mini-chip">обучения</span>':''}
+                        ${dep.show_activity?'<span class="mini-chip">активность</span>':''}
+                        ${dep.show_punishments?'<span class="mini-chip">наказания</span>':''}
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table class="data modern-table"><thead><tr>
+                        <th>№</th><th>Администратор</th><th>Discord</th><th>Ранг</th><th>Кастомная должность</th>${metricsHeader(dep)}<th>Статус</th><th style="width:150px">Действия</th>
+                    </tr></thead><tbody>
+                    ${group.map((a,i)=>`<tr data-id="${a.id}">
+                        <td>${i+1}</td>
+                        <td><b>${escapeHtml(a.display_name)}</b><div class="muted">${escapeHtml(a.game_nick||'')}</div></td>
+                        <td>${escapeHtml(a.discord||'—')}</td>
+                        <td>${a.rank ? `<span class="rank-pill">R${a.rank}</span>` : '<span class="muted">—</span>'}</td>
+                        <td>${escapeHtml(a.custom_position || a.current_position || '—')}</td>
+                        ${metricsCells(a, dep, calls, discipline)}
+                        <td>${a.is_active ? '<span class="badge success">Активен</span>' : '<span class="badge neutral">Архив</span>'}</td>
+                        <td class="actions">
+                            <button class="btn btn-sm" data-act="view">👁</button>
+                            ${canEdit?`<button class="btn btn-sm" data-act="edit">✎</button>`:''}
+                            ${canEdit?`<button class="btn btn-sm btn-danger" data-act="arch">📦</button>`:''}
+                        </td>
+                    </tr>`).join('')}
+                    </tbody></table>
+                </div>
+            </div>`;
+        }).join('') || `<div class="empty">Нет администраторов по выбранным фильтрам</div>`;
 
         setCurrentCsv(rows.map(a => ({
-            display_name: a.display_name, discord: a.discord, game_nick: a.game_nick,
-            rank: a.rank, custom_position: a.custom_position, rank_position: adminPositionLabel(a), branch: a.branch, joined_at: a.joined_at,
-            last_promotion_at: a.last_promotion_at, activity_percent: a.activity_percent,
+            display_name: a.display_name,
+            discord: a.discord,
+            game_nick: a.game_nick,
+            rank: a.rank,
+            custom_position: a.custom_position,
+            department: a.branch,
+            accepted_reports: a.accepted_reports,
+            activity_percent: a.activity_percent,
+            calls: adminCallsCount(a,calls),
+            trainings: adminTrainingsCount(a,calls),
+            active_punishments: adminActivePunishments(a,discipline),
             is_active: a.is_active
         })), 'admins.csv');
     };
 
     $('#a-search').oninput = render;
-    $('#a-pos').onchange = render;
+    $('#a-dep').onchange = render;
+    $('#a-rank').onchange = render;
     $('#a-active').onchange = render;
 
-    if (canEdit) {
-        $('#btn-add-admin').onclick = () => adminModal(null, () => handleRoute(true));
-    }
+    if (canEdit) $('#btn-add-admin').onclick = () => adminModal(null, allDepartments, () => handleRoute(true));
 
-    $('#a-table tbody').addEventListener('click', async (e) => {
+    $('#admin-department-sections').addEventListener('click', async (e) => {
         const btn = e.target.closest('button[data-act]'); if (!btn) return;
         const id = btn.closest('tr').dataset.id;
         const a = admins.find(x => x.id === id);
+        if (!a) return;
         if (btn.dataset.act === 'edit') {
-            adminModal(a, (upd) => { Object.assign(a, upd); render(); });
+            adminModal(a, allDepartments, (upd) => { Object.assign(a, upd); render(); });
         } else if (btn.dataset.act === 'arch') {
             if (!await confirmDialog('Архивировать администратора?')) return;
             try { const upd = await archiveAdmin(id); Object.assign(a, upd); render(); toast('Архивирован','success'); }
@@ -1669,25 +1855,34 @@ async function renderAdmins(view) {
     render();
 }
 
-function adminModal(a, onSave) {
+
+function adminModal(a, departments = [], onSave) {
     const isNew = !a;
+    const depOptions = getDepartmentsFromAdmins([], departments);
     openModal({
-        title: isNew ? 'Новый администратор' : 'Редактирование',
+        title: isNew ? 'Новый администратор' : 'Редактирование администратора',
+        large: true,
         body: `
             <div class="form-grid">
                 <div class="form-row"><label>Имя / ник *</label><input id="ad-name" value="${escapeHtml(a?.display_name||'')}"/></div>
                 <div class="form-row"><label>Discord</label><input id="ad-discord" value="${escapeHtml(a?.discord||'')}"/></div>
                 <div class="form-row"><label>Игровой ник</label><input id="ad-game" value="${escapeHtml(a?.game_nick||'')}"/></div>
                 <div class="form-row"><label>Ранг</label><select id="ad-rank"><option value="">—</option>${Array.from({length:11},(_,i)=>i+1).map(n=>`<option value="${n}" ${Number(a?.rank)===n?'selected':''}>Ранг ${n}</option>`).join('')}</select></div>
-                <div class="form-row"><label>Кастомная должность</label><input id="ad-custom-pos" value="${escapeHtml(a?.custom_position||'')}" placeholder="Например: Главный администратор"/></div>
-                <div class="form-row"><label>Отдел / направление</label><input id="ad-branch" value="${escapeHtml(a?.branch||'Общая администрация')}"/></div>
+                <div class="form-row"><label>Кастомная должность</label><input id="ad-custom-pos" value="${escapeHtml(a?.custom_position||'')}" placeholder="Например: Руководитель отдела"/></div>
+                <div class="form-row"><label>Отдел / раздел</label>
+                    <input id="ad-branch" list="dep-list" value="${escapeHtml(a?.branch||'Общая администрация')}" placeholder="Например: Отдел репортов"/>
+                    <datalist id="dep-list">${depOptions.map(d=>`<option>${escapeHtml(d.name)}</option>`).join('')}</datalist>
+                </div>
+                <div class="form-row"><label>Принятые рапорты</label><input id="ad-reports" type="number" min="0" value="${Number(a?.accepted_reports||0)}"/></div>
                 <div class="form-row"><label>Руководство</label><select id="ad-lead"><option value="false" ${!a?.is_leadership?'selected':''}>Нет</option><option value="true" ${a?.is_leadership?'selected':''}>Да</option></select></div>
                 <div class="form-row"><label>Дата вступления</label><input id="ad-joined" type="date" value="${a?.joined_at||''}"/></div>
                 <div class="form-row"><label>Последнее повышение</label><input id="ad-prom" type="date" value="${a?.last_promotion_at||''}"/></div>
                 <div class="form-row"><label>Активность %</label><input id="ad-act" type="number" min="0" max="100" value="${a?.activity_percent||0}"/></div>
                 <div class="form-row" style="grid-column:1/-1"><label>Комментарий</label>
                     <textarea id="ad-com" rows="2">${escapeHtml(a?.comment||'')}</textarea></div>
-            </div>`,
+            </div>
+            <p class="muted" style="margin-top:10px">Отдел можно выбрать из списка или вписать новый. Для отдельной настройки отображаемых колонок создайте отдел во вкладке «Отделы / разделы».</p>
+        `,
         footer: `<button class="btn" data-cancel>Отмена</button>
                  <button class="btn btn-primary" data-save>Сохранить</button>`
     });
@@ -1703,6 +1898,7 @@ function adminModal(a, onSave) {
             custom_position: $('#ad-custom-pos').value.trim() || null,
             current_position: $('#ad-custom-pos').value.trim() || ($('#ad-rank').value ? `Ранг ${$('#ad-rank').value}` : null),
             branch: $('#ad-branch').value.trim()||'Общая администрация',
+            accepted_reports: parseInt($('#ad-reports').value) || 0,
             is_leadership: $('#ad-lead').value === 'true',
             joined_at: $('#ad-joined').value||null,
             last_promotion_at: $('#ad-prom').value||null,
@@ -1955,74 +2151,154 @@ async function renderDiscipline(view) {
 // =====================================================================
 // 12. Система повышения
 // =====================================================================
+
 async function renderPromotion(view) {
-    const [admins, settings, calls, discipline] = await Promise.all([
-        loadAdmins(false), loadPromotionSettings(), loadCallHistory(), loadDisciplineRecords()
+    const [admins, departments, settings, calls, discipline] = await Promise.all([
+        loadAdmins(false), loadDepartments(), loadPromotionSettings(), loadCallHistory(), loadDisciplineRecords()
     ]);
     State.cache.admins = admins; State.cache.promotionSettings = settings;
-    State.cache.calls = calls; State.cache.discipline = discipline;
+    State.cache.calls = calls; State.cache.discipline = discipline; State.cache.departments = departments;
 
     const readiness = await calculatePromotionReadiness(admins, settings, calls, discipline);
     const canEdit = hasRole('owner','admin');
+    const allDepartments = getDepartmentsFromAdmins(admins, departments).filter(dep => admins.some(a => (a.branch||'Общая администрация') === dep.name));
 
     view.innerHTML = `
-        <h2>Система повышения</h2>
-        <div class="panel">
-            <div class="panel-header">
-                <h3>Готовность к повышению</h3>
-                <button class="btn btn-sm" id="btn-recalc">⟳ Обновить расчёты</button>
-            </div>
-            <div class="table-wrap">
-                <table class="data"><thead><tr>
+        <div class="liverp-hero">
+            <div><h2>Система повышений / понижений</h2><p class="muted">Разделение по отделам, ранги 1–11, кастомные должности, рапорты, обзвоны, обучение и активность.</p></div>
+            <button class="btn btn-sm" id="btn-recalc">⟳ Обновить расчёты</button>
+        </div>
+        <div class="toolbar panel">
+            <input id="pr-search" placeholder="Поиск администратора..." />
+            <select id="pr-dep"><option value="">Все отделы</option>${allDepartments.map(d=>`<option>${escapeHtml(d.name)}</option>`).join('')}</select>
+            <select id="pr-status"><option value="">Все статусы</option><option value="ready">Готов</option><option value="pending">На рассмотрении</option><option value="not_ready">Не готов</option></select>
+        </div>
+        <div id="promotion-sections"></div>
+    `;
+
+    const render = () => {
+        const q = ($('#pr-search').value||'').toLowerCase();
+        const depFilter = $('#pr-dep').value;
+        const stFilter = $('#pr-status').value;
+        let rows = readiness.filter(r => {
+            if (depFilter && (r.admin.branch||'Общая администрация') !== depFilter) return false;
+            if (stFilter && r.status !== stFilter) return false;
+            if (q && !(`${r.admin.display_name||''} ${r.admin.discord||''} ${r.admin.custom_position||''} ${r.admin.current_position||''}`.toLowerCase().includes(q))) return false;
+            return true;
+        });
+        const sections = getDepartmentsFromAdmins(rows.map(r=>r.admin), departments).filter(dep => rows.some(r => (r.admin.branch||'Общая администрация') === dep.name));
+        $('#promotion-sections').innerHTML = sections.map(dep => {
+            const group = rows.filter(r => (r.admin.branch||'Общая администрация') === dep.name)
+                .sort((a,b)=>(Number(b.admin.rank)||0)-(Number(a.admin.rank)||0));
+            return `<div class="panel department-panel promotion-panel">
+                <div class="panel-header"><h3>${escapeHtml(dep.name)} <span class="badge accent">${group.length}</span></h3><div class="department-toggles">${dep.show_reports?'<span class="mini-chip">рапорты</span>':''}${dep.show_calls?'<span class="mini-chip">обзвоны</span>':''}${dep.show_activity?'<span class="mini-chip">активность</span>':''}</div></div>
+                <div class="table-wrap"><table class="data modern-table"><thead><tr>
                     <th>№</th><th>Админ</th><th>Ранг / должность</th><th>Следующий ранг</th>
-                    <th class="num">Дней</th><th class="num">Обзвоны</th><th class="num">Обучения</th>
-                    <th class="num">Активные нак.</th><th>Готовность</th><th>Статус</th>
-                    <th style="width:220px">Действия</th>
+                    <th class="num">Дней</th>${dep.show_calls?'<th class="num">Обзвоны</th>':''}${dep.show_trainings?'<th class="num">Обучения</th>':''}${dep.show_reports?'<th class="num">Рапорты</th>':''}${dep.show_activity?'<th class="num">Активность</th>':''}${dep.show_punishments?'<th class="num">Активные нак.</th>':''}
+                    <th>Готовность</th><th>Статус</th><th style="width:270px">Действия</th>
                 </tr></thead><tbody>
-                ${readiness.map((r,i) => {
+                ${group.map((r,i)=>{
                     const c = r.checks || {};
                     return `<tr>
                         <td>${i+1}</td>
-                        <td>${escapeHtml(r.admin.display_name)}</td>
-                        <td>${escapeHtml(adminPositionLabel(r.admin))}</td>
-                        <td>${escapeHtml(r.next_position||'—')}</td>
+                        <td><b>${escapeHtml(r.admin.display_name)}</b><div class="muted">${escapeHtml(r.admin.discord||'')}</div></td>
+                        <td>${r.admin.rank ? `<span class="rank-pill">R${r.admin.rank}</span>` : ''} ${escapeHtml(r.admin.custom_position || r.admin.current_position || '—')}</td>
+                        <td>${escapeHtml(r.next_position|| nextRankLabel(r.admin, +1))}</td>
                         <td class="num">${r.days||0}${r.setting?` / ${r.setting.min_days}`:''} ${c.days?'✔':'✖'}</td>
-                        <td class="num">${r.callsCount||0}${r.setting?` / ${r.setting.min_calls}`:''} ${c.calls?'✔':'✖'}</td>
-                        <td class="num">${r.trainingsCount||0}${r.setting?` / ${r.setting.min_trainings}`:''} ${c.trainings?'✔':'✖'}</td>
-                        <td class="num">${r.activePuns||0} ${c.punishments?'✔':'✖'}</td>
-                        <td>
-                            <div class="progress"><div class="${r.percent>=100?'success':r.percent>=60?'warning':'danger'}" style="width:${r.percent}%"></div></div>
-                            <small class="muted">${r.percent}%</small>
-                        </td>
+                        ${dep.show_calls?`<td class="num">${r.callsCount||0}${r.setting?` / ${r.setting.min_calls}`:''} ${c.calls?'✔':'✖'}</td>`:''}
+                        ${dep.show_trainings?`<td class="num">${r.trainingsCount||0}${r.setting?` / ${r.setting.min_trainings}`:''} ${c.trainings?'✔':'✖'}</td>`:''}
+                        ${dep.show_reports?`<td class="num">${adminReportsCount(r.admin)}</td>`:''}
+                        ${dep.show_activity?`<td class="num">${r.admin.activity_percent||0}% ${c.activity?'✔':'✖'}</td>`:''}
+                        ${dep.show_punishments?`<td class="num">${r.activePuns||0} ${c.punishments?'✔':'✖'}</td>`:''}
+                        <td><div class="progress"><div class="${r.percent>=100?'success':r.percent>=60?'warning':'danger'}" style="width:${r.percent}%"></div></div><small class="muted">${r.percent}%</small></td>
                         <td>${statusBadge(r.status)}</td>
                         <td class="actions">
-                            ${canEdit && r.next_position ? `<button class="btn btn-sm btn-success" data-id="${r.admin.id}" data-next="${escapeHtml(r.next_position)}" data-act="approve">⬆ Повысить</button>` : ''}
+                            ${canEdit ? `<button class="btn btn-sm btn-success" data-id="${r.admin.id}" data-act="promote">⬆ Повысить</button>` : ''}
+                            ${canEdit ? `<button class="btn btn-sm btn-warning" data-id="${r.admin.id}" data-act="demote">⬇ Понизить</button>` : ''}
                             ${canEdit ? `<button class="btn btn-sm btn-danger" data-id="${r.admin.id}" data-act="reject">✖ Отказ</button>` : ''}
                         </td>
                     </tr>`;
-                }).join('') || `<tr><td colspan="11" class="muted">Нет данных</td></tr>`}
-                </tbody></table>
-            </div>
-        </div>
-    `;
+                }).join('') || `<tr><td colspan="12" class="muted">Нет данных</td></tr>`}
+                </tbody></table></div>
+            </div>`;
+        }).join('') || `<div class="empty">Нет данных по выбранным фильтрам</div>`;
+    };
 
     $('#btn-recalc').onclick = () => handleRoute(true);
+    $('#pr-search').oninput = render;
+    $('#pr-dep').onchange = render;
+    $('#pr-status').onchange = render;
 
-    view.querySelector('tbody').addEventListener('click', async (e) => {
+    $('#promotion-sections').addEventListener('click', async (e) => {
         const btn = e.target.closest('button[data-act]'); if (!btn) return;
         const adminId = btn.dataset.id;
-        if (btn.dataset.act === 'approve') {
-            const nextPos = btn.dataset.next;
-            const comment = prompt(`Повысить до «${nextPos}». Комментарий:`,'');
-            if (comment === null) return;
-            try { await approvePromotion(adminId, nextPos, comment); toast('Повышен','success'); handleRoute(true); }
-            catch(er){ toast('Ошибка: '+er.message,'danger'); }
+        const admin = admins.find(a => a.id === adminId);
+        if (!admin) return;
+        if (btn.dataset.act === 'promote') {
+            rankChangeModal(admin, 'promote', () => handleRoute(true));
+        } else if (btn.dataset.act === 'demote') {
+            rankChangeModal(admin, 'demote', () => handleRoute(true));
         } else if (btn.dataset.act === 'reject') {
-            const comment = prompt('Причина отказа:',''); if (comment === null) return;
+            const comment = prompt('Причина отказа:', ''); if (comment === null) return;
             try { await rejectPromotion(adminId, comment); toast('Отказ зафиксирован','warning'); handleRoute(true); }
             catch(er){ toast('Ошибка: '+er.message,'danger'); }
         }
     });
+
+    render();
+}
+
+function nextRankLabel(admin, delta) {
+    const r = Math.min(11, Math.max(1, Number(admin.rank || 1) + delta));
+    return `Ранг ${r}`;
+}
+
+function rankChangeModal(admin, direction, onDone) {
+    const isPromote = direction === 'promote';
+    const current = Number(admin.rank || 1);
+    const suggested = Math.min(11, Math.max(1, current + (isPromote ? 1 : -1)));
+    openModal({
+        title: isPromote ? `Повысить: ${admin.display_name}` : `Понизить: ${admin.display_name}`,
+        body: `
+            <div class="form-grid">
+                <div class="form-row"><label>Текущий ранг</label><input value="${rankLabel(admin.rank)}" readonly /></div>
+                <div class="form-row"><label>Новый ранг</label><select id="chg-rank">${Array.from({length:11},(_,i)=>i+1).map(n=>`<option value="${n}" ${n===suggested?'selected':''}>Ранг ${n}</option>`).join('')}</select></div>
+                <div class="form-row" style="grid-column:1/-1"><label>Кастомная должность после изменения</label><input id="chg-custom" value="${escapeHtml(admin.custom_position||'')}" placeholder="Можно оставить пустым" /></div>
+                <div class="form-row" style="grid-column:1/-1"><label>Комментарий</label><textarea id="chg-comment" rows="2" placeholder="Причина / комментарий руководства"></textarea></div>
+            </div>
+        `,
+        footer: `<button class="btn" data-cancel>Отмена</button><button class="btn ${isPromote?'btn-success':'btn-warning'}" data-save>${isPromote?'Повысить':'Понизить'}</button>`
+    });
+    $('[data-cancel]').onclick = closeModal;
+    $('[data-save]').onclick = async () => {
+        const newRank = parseInt($('#chg-rank').value);
+        const custom = $('#chg-custom').value.trim() || null;
+        const comment = $('#chg-comment').value.trim() || null;
+        try { await changeAdminRank(admin, newRank, custom, comment, direction); closeModal(); toast(isPromote?'Повышен':'Понижен', isPromote?'success':'warning'); onDone(); }
+        catch(e) { toast('Ошибка: '+e.message,'danger'); }
+    };
+}
+
+async function changeAdminRank(admin, newRank, customPosition, comment, direction) {
+    const oldLabel = adminPositionLabel(admin);
+    const patch = normalizeAdminPayload({
+        rank: newRank,
+        custom_position: customPosition,
+        current_position: customPosition || `Ранг ${newRank}`,
+        last_promotion_at: direction === 'promote' ? new Date().toISOString().slice(0,10) : admin.last_promotion_at
+    });
+    await updateAdmin(admin.id, patch);
+    try {
+        await SB.client.from('promotions').insert({
+            admin_id: admin.id,
+            old_position: oldLabel,
+            new_position: adminPositionLabel({ ...admin, ...patch }),
+            approved_by: State.user?.id || SB.user?.id || null,
+            promoted_at: new Date().toISOString().slice(0,10),
+            status: 'promoted',
+            comment: `${direction === 'promote' ? 'Повышение' : 'Понижение'}${comment ? ': ' + comment : ''}`
+        });
+    } catch (e) { console.warn('promotion log failed', e.message); }
 }
 
 // =====================================================================
@@ -2429,7 +2705,7 @@ async function renderSettings(view) {
     $('#s-import-json').onclick = () => $('#btn-import-json').click();
     $('#s-clear-cache').onclick = () => {
         State.cache = { admins:[],questions:[],candidates:[],calls:[],discipline:[],
-            promotionSettings:[],promotions:[],payments:[],users:[] };
+            promotionSettings:[],promotions:[],payments:[],users:[],departments:[] };
         try { localStorage.removeItem('supabase.auth.token'); } catch{}
         toast('Кэш очищен','success');
     };

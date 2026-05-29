@@ -10,7 +10,7 @@
 //    Project Settings → API → Project URL + anon/public key
 // ---------------------------------------------------------------------
 window.SUPABASE_CONFIG = {
-url: 'https://efezrmthbssdkwbgypmv.supabase.co',
+    url: 'https://efezrmthbssdkwbgypmv.supabase.co',
     anonKey: 'sb_publishable_535wL9XsOnsNrQrVMDUU4w_TqPmEhgA'
 };
 
@@ -131,6 +131,59 @@ async function disableUser(userId, disabled = true) {
         .single();
     if (error) throw error;
     return data;
+}
+
+
+async function adminCreateUser({ email, password, display_name, access_role = 'viewer', admin_id = null, is_active = true }) {
+    if (!hasRole('owner')) throw new Error('Только owner может создавать пользователей');
+    const { data, error } = await SB.client.functions.invoke('manage-user', {
+        body: { action: 'create', email, password, display_name, access_role, admin_id, is_active }
+    });
+    if (error) throw error;
+    await writeAuditLog('create', 'user', data?.profile?.id || data?.id || null, { email, display_name, access_role, admin_id, is_active });
+    return data?.profile || data;
+}
+
+async function adminUpdateUser({ id, email, password, display_name, access_role, admin_id = null, is_active = true }) {
+    if (!hasRole('owner')) throw new Error('Только owner может редактировать пользователей');
+    const { data, error } = await SB.client.functions.invoke('manage-user', {
+        body: { action: 'update', id, email, password: password || undefined, display_name, access_role, admin_id, is_active }
+    });
+    if (error) throw error;
+    await writeAuditLog('update', 'user', id, { email, display_name, access_role, admin_id, is_active, password_changed: Boolean(password) });
+    return data?.profile || data;
+}
+
+// ---------------------------------------------------------------------
+// 5.5 Отделы / разделы
+// ---------------------------------------------------------------------
+async function loadDepartments() {
+    const { data, error } = await SB.client
+        .from('admin_departments')
+        .select('*')
+        .order('sort_order')
+        .order('name');
+    if (error) throw error;
+    return data || [];
+}
+
+async function saveDepartment(dep) {
+    const payload = { ...dep };
+    if (!payload.id) delete payload.id;
+    const { data, error } = await SB.client
+        .from('admin_departments')
+        .upsert(payload, { onConflict: 'id' })
+        .select()
+        .single();
+    if (error) throw error;
+    await writeAuditLog('upsert','department', data.id, payload);
+    return data;
+}
+
+async function deleteDepartment(id) {
+    const { error } = await SB.client.from('admin_departments').delete().eq('id', id);
+    if (error) throw error;
+    await writeAuditLog('delete','department', id, {});
 }
 
 // ---------------------------------------------------------------------
@@ -572,7 +625,7 @@ async function deletePayment(id) {
 async function exportData() {
     const tables = ['user_profiles','admins','candidates','questions',
         'call_sessions','call_answers','discipline_records',
-        'promotion_settings','promotions','payments'];
+        'promotion_settings','promotions','payments','admin_departments'];
     const dump = { exportedAt: new Date().toISOString(), tables: {} };
     for (const t of tables) {
         try {
@@ -589,7 +642,7 @@ async function exportData() {
 
 async function importData(dump) {
     // Импорт идёт по таблицам в правильном порядке.
-    const order = ['admins','candidates','questions','promotion_settings',
+    const order = ['admin_departments','admins','candidates','questions','promotion_settings',
         'call_sessions','call_answers','discipline_records','promotions','payments'];
     for (const t of order) {
         const rows = dump?.tables?.[t];
@@ -621,7 +674,8 @@ async function writeAuditLog(action, entityType, entityId, details) {
 // Экспортируем в window для удобства
 Object.assign(window, {
     initSupabase, login, logout, getCurrentUser, getCurrentProfile, requireAuth, hasRole,
-    loadUsers, saveUserProfile, disableUser,
+    loadUsers, saveUserProfile, disableUser, adminCreateUser, adminUpdateUser,
+    loadDepartments, saveDepartment, deleteDepartment,
     loadAdmins, createAdmin, updateAdmin, archiveAdmin,
     loadQuestions, createQuestion, updateQuestion, disableQuestion, deleteQuestion,
     loadCandidates, createCandidate, updateCandidate, findOrCreateCandidate,

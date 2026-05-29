@@ -74,16 +74,16 @@ async function getCurrentProfile() {
     if (!SB.user) await getCurrentUser();
     if (!SB.user) return null;
     try {
-        // Таймаут 8 секунд — если RLS блокирует, не зависаем вечно
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 8000);
-        const { data, error } = await SB.client
+        const promise = SB.client
             .from('user_profiles')
             .select('*')
             .eq('id', SB.user.id)
-            .maybeSingle()
-            .abortSignal(controller.signal);
-        clearTimeout(timeout);
+            .maybeSingle();
+        // Таймаут 10 секунд чтобы не зависнуть на RLS
+        const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Profile fetch timeout')), 10000)
+        );
+        const { data, error } = await Promise.race([promise, timeoutPromise]);
         if (error) {
             console.error('[Supabase] getCurrentProfile error', error);
             return null;
@@ -91,7 +91,7 @@ async function getCurrentProfile() {
         SB.profile = data || null;
         return SB.profile;
     } catch (e) {
-        console.error('[Supabase] getCurrentProfile timeout/error', e);
+        console.error('[Supabase] getCurrentProfile failed:', e.message);
         return null;
     }
 }

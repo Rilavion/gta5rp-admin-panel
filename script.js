@@ -345,9 +345,11 @@ function showLogin() {
 }
 
 async function tryEnterApp() {
+    console.log('[LiveRP] tryEnterApp: checking auth...');
     const r = await requireAuth();
+    console.log('[LiveRP] requireAuth result:', r ? 'OK' : 'NULL', r?.profile?.access_role);
     if (!r) {
-        toast('Аккаунт неактивен или нет профиля. Обратитесь к owner.', 'danger', 6000);
+        toast('Не удалось авторизоваться. Откройте консоль (F12) для деталей.', 'danger', 8000);
         return false;
     }
     State.user = r.user;
@@ -371,8 +373,9 @@ function bindGlobal() {
         try {
             await login(email, pwd);
             const ok = await tryEnterApp();
-            if (!ok) { await logout(); err.textContent = 'Профиль не активен.'; }
+            if (!ok) { await logout(); err.textContent = 'Не удалось загрузить профиль. Проверьте RLS и user_profiles в Supabase.'; }
         } catch (e) {
+            console.error('Login error:', e);
             err.textContent = e.message || 'Ошибка входа';
         } finally {
             $('#login-btn').disabled = false;

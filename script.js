@@ -310,27 +310,33 @@ async function bootstrap() {
     applyAppearanceSettings();
     initSupabase();
 
+    // Привязываем обработчики СРАЗУ, до проверки сессии
+    setInterval(tickClock, 1000);
+    tickClock();
+    bindGlobal();
+
     if (!SB.client) {
         showLogin();
         $('#login-error').textContent = 'Supabase не настроен. Откройте supabase.js и впишите URL/anon key.';
         return;
     }
 
-    const session = await SB.client.auth.getSession();
-    if (session?.data?.session) {
-        const ok = await tryEnterApp();
-        if (!ok) showLogin();
-    } else {
+    try {
+        const session = await SB.client.auth.getSession();
+        if (session?.data?.session) {
+            const ok = await tryEnterApp();
+            if (!ok) showLogin();
+        } else {
+            showLogin();
+        }
+    } catch (e) {
+        console.error('Bootstrap error:', e);
         showLogin();
     }
 
     SB.client.auth.onAuthStateChange(async (event) => {
         if (event === 'SIGNED_OUT') { showLogin(); }
     });
-
-    setInterval(tickClock, 1000);
-    tickClock();
-    bindGlobal();
 }
 
 function showLogin() {

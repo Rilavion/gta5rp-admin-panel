@@ -73,17 +73,27 @@ async function getCurrentUser() {
 async function getCurrentProfile() {
     if (!SB.user) await getCurrentUser();
     if (!SB.user) return null;
-    const { data, error } = await SB.client
-        .from('user_profiles')
-        .select('*')
-        .eq('id', SB.user.id)
-        .maybeSingle();
-    if (error) {
-        console.error('[Supabase] getCurrentProfile error', error);
+    try {
+        // Таймаут 8 секунд — если RLS блокирует, не зависаем вечно
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        const { data, error } = await SB.client
+            .from('user_profiles')
+            .select('*')
+            .eq('id', SB.user.id)
+            .maybeSingle()
+            .abortSignal(controller.signal);
+        clearTimeout(timeout);
+        if (error) {
+            console.error('[Supabase] getCurrentProfile error', error);
+            return null;
+        }
+        SB.profile = data || null;
+        return SB.profile;
+    } catch (e) {
+        console.error('[Supabase] getCurrentProfile timeout/error', e);
         return null;
     }
-    SB.profile = data || null;
-    return SB.profile;
 }
 
 async function requireAuth() {

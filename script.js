@@ -739,9 +739,9 @@ async function renderCalls(view) {
 
             <div class="live-score">
                 <div class="ls-item"><div class="ls-label">Баллов</div><div class="ls-val" id="ls-pts">0</div></div>
-                <div class="ls-item"><div class="ls-label">Максимум</div><div class="ls-val" id="ls-max">${questions.length}</div></div>
+                <div class="ls-item"><div class="ls-label">Отвечено / всего</div><div class="ls-val" id="ls-max">0 / ${questions.length}</div></div>
                 <div class="ls-item"><div class="ls-label">Процент</div><div class="ls-val" id="ls-pct">0%</div></div>
-                <div class="ls-item"><div class="ls-label">Статус</div><div class="ls-val" id="ls-status">${statusBadge('failed')}</div></div>
+                <div class="ls-item"><div class="ls-label">Статус</div><div class="ls-val" id="ls-status"><span class="badge neutral">Нет ответов</span></div></div>
                 <div class="ls-actions">
                     <button class="btn"           id="btn-clear-form">Очистить форму</button>
                     <button class="btn"           id="btn-save-draft">Сохранить черновик</button>
@@ -792,35 +792,60 @@ async function renderCalls(view) {
     recalcLive();
 }
 
-function recalcLive() {
-    let pts = 0, max = 0;
+function getSelectedQuestionAnswers() {
+    const answers = [];
+    let pts = 0;
+
     document.querySelectorAll('.q-item').forEach(item => {
-        max += 1;
         const sel = item.querySelector('.q-opt.sel-1, .q-opt.sel-h, .q-opt.sel-0');
-        if (sel) pts += parseFloat(sel.dataset.score);
+        if (!sel) return; // Неотвеченный вопрос не участвует в оценке
+
+        const score = parseFloat(sel.dataset.score);
+        pts += score;
+
+        const cm = item.querySelector('[data-q-comment]')?.value.trim() || '';
+        answers.push({
+            question_id: item.dataset.qid,
+            score,
+            comment: cm || null
+        });
     });
-    const pct = max ? Math.round(pts/max*100) : 0;
+
+    const answered = answers.length;
+    const total = document.querySelectorAll('.q-item').length;
+    const pct = answered ? Math.round(pts / answered * 100) : 0;
+
+    return { answers, pts, answered, total, pct };
+}
+
+function recalcLive() {
+    const { pts, answered, total, pct } = getSelectedQuestionAnswers();
     const status = calcStatus(pct);
-    const ptsEl = document.getElementById('ls-pts'); if (ptsEl) ptsEl.textContent = pts;
-    const maxEl = document.getElementById('ls-max'); if (maxEl) maxEl.textContent = max;
-    const pctEl = document.getElementById('ls-pct'); if (pctEl) pctEl.textContent = pct + '%';
-    const stEl  = document.getElementById('ls-status'); if (stEl) stEl.innerHTML = statusBadge(status);
+
+    const ptsEl = document.getElementById('ls-pts');
+    if (ptsEl) ptsEl.textContent = Number.isInteger(pts) ? String(pts) : pts.toFixed(1);
+
+    const maxEl = document.getElementById('ls-max');
+    if (maxEl) maxEl.textContent = `${answered} / ${total}`;
+
+    const pctEl = document.getElementById('ls-pct');
+    if (pctEl) pctEl.textContent = pct + '%';
+
+    const stEl  = document.getElementById('ls-status');
+    if (stEl) stEl.innerHTML = answered ? statusBadge(status) : '<span class="badge neutral">Нет ответов</span>';
 }
 
 async function saveCallSessionAction(mode) {
     const name = $('#c-name').value.trim();
     if (!name) { toast('Укажите имя кандидата','warning'); return; }
-    const answers = [];
-    let pts = 0, max = 0;
-    document.querySelectorAll('.q-item').forEach(item => {
-        max += 1;
-        const sel = item.querySelector('.q-opt.sel-1, .q-opt.sel-h, .q-opt.sel-0');
-        const score = sel ? parseFloat(sel.dataset.score) : 0;
-        if (sel) pts += score;
-        const cm = item.querySelector('[data-q-comment]').value.trim();
-        answers.push({ question_id: item.dataset.qid, score, comment: cm || null });
-    });
-    const pct = max ? Math.round(pts/max*100) : 0;
+
+    const { answers, pts, answered, total, pct } = getSelectedQuestionAnswers();
+
+    if (mode !== 'draft' && answered === 0) {
+        toast('Нужно оценить хотя бы один вопрос. Неотвеченные вопросы не учитываются.', 'warning');
+        return;
+    }
+
     const finalStatus = mode === 'draft' ? 'draft' : calcStatus(pct);
 
     try {
@@ -842,14 +867,15 @@ async function saveCallSessionAction(mode) {
             call_replay_url: $('#c-replay-call').value.trim() || null,
             training_replay_url: $('#c-replay-train').value.trim() || null,
             total_points: pts,
-            max_points: max,
+            // max_points = количество реально отвеченных вопросов, а не все активные вопросы
+            max_points: answered,
             percent: pct,
             status: finalStatus,
             comment: $('#c-comment').value.trim() || null,
             extra_comment: $('#c-extra').value.trim() || null
         }, answers);
 
-        toast(`Обзвон сохранён (${pct}%, ${finalStatus})`,'success');
+        toast(`Обзвон сохранён (${Number.isInteger(pts)?pts:pts.toFixed(1)}/${answered} из ${total}, ${pct}%, ${finalStatus})`,'success');
         handleRoute(true);
     } catch (e) {
         console.error(e);
@@ -1505,7 +1531,7 @@ async function renderUsers(view) {
         <div class="liverp-hero">
             <div>
                 <h2>Пользователи системы</h2>
-                <p class="muted">Аккаунты для входа в панель. UUID больше не вводится вручную: owner создаёт пользователя прямо здесь через Edge Function <code>manage-user</code>.</p>
+                <p class="muted">Аккаунты для входа в панель. Owner создаёт пользователей прямо здесь: email, пароль, роль и привязка к составу.</p>
             </div>
             ${canManageUsers ? `<button class="btn btn-primary" id="btn-add-user">+ Создать пользователя</button>`:''}
         </div>
@@ -1523,7 +1549,7 @@ async function renderUsers(view) {
             </div>
             <div class="table-wrap">
                 <table class="data" id="u-table"><thead><tr>
-                    <th>ID</th><th>Email</th><th>Имя</th><th>Роль</th><th>Привязка к составу</th>
+                    <th>Email</th><th>Имя</th><th>Роль</th><th>Привязка к составу</th>
                     <th>Активен</th><th>Создан</th><th style="width:220px">Действия</th>
                 </tr></thead><tbody></tbody></table>
             </div>
@@ -1545,7 +1571,6 @@ async function renderUsers(view) {
         $('#u-table tbody').innerHTML = rows.map(u => {
             const admin = admins.find(a => a.id === u.admin_id);
             return `<tr data-id="${u.id}">
-                <td><code style="font-size:11px">${escapeHtml(String(u.id || '').slice(0,8))}…</code></td>
                 <td>${escapeHtml(u.email||'—')}</td>
                 <td>${escapeHtml(u.display_name||'—')}</td>
                 <td>${roleBadge(u.access_role)}</td>
@@ -1559,7 +1584,7 @@ async function renderUsers(view) {
                     ` : '<span class="muted">только просмотр</span>'}
                 </td>
             </tr>`;
-        }).join('') || `<tr><td colspan="8" class="muted">Нет данных</td></tr>`;
+        }).join('') || `<tr><td colspan="7" class="muted">Нет данных</td></tr>`;
     };
 
     $('#u-search').oninput = render;
@@ -1608,9 +1633,7 @@ function userProfileModal(u, admins, onSave) {
         title: isNew ? 'Создать пользователя' : 'Редактирование пользователя',
         body: `
             <div class="form-grid">
-                ${isNew ? '' : `
-                <div class="form-row"><label>ID пользователя</label>
-                    <input id="up-id" value="${escapeHtml(u?.id||'')}" readonly /></div>`}
+
                 <div class="form-row"><label>Email для входа *</label>
                     <input id="up-email" type="email" value="${escapeHtml(u?.email||'')}" placeholder="user@example.com"/></div>
                 <div class="form-row"><label>Пароль ${isNew ? '*' : '(оставьте пустым, если не менять)'}</label>
@@ -1635,7 +1658,7 @@ function userProfileModal(u, admins, onSave) {
                     </select></div>
             </div>
             <p class="muted" style="margin-top:10px">
-                UUID вручную больше не нужен. При создании Edge Function <code>manage-user</code> сама создаёт Auth-аккаунт в Supabase и профиль в <code>user_profiles</code>.
+                При создании Edge Function <code>manage-user</code> сама создаёт Auth-аккаунт в Supabase и профиль доступа. Вручную ничего из Supabase вводить не нужно.
             </p>
         `,
         footer: `<button class="btn" data-cancel>Отмена</button>

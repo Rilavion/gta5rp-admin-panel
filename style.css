@@ -944,3 +944,38 @@ body[data-density="compact"] .nav-link { min-height:34px; padding:7px 10px; }
     .view { padding: 16px; }
     .liverp-hero { flex-direction:column; align-items:flex-start; }
 }
+
+/* =====================================================================
+ * v3.2 Scroll + UI safety patch
+ * Гарантирует нормальную прокрутку даже если браузер/Pages кешируют старые
+ * размеры layout. Основной скролл теперь общий, а не заблокированный body.
+ * ===================================================================== */
+html, body {
+    min-height: 100%;
+    height: auto !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+}
+body {
+    min-height: 100dvh;
+}
+.app {
+    min-height: 100dvh !important;
+    height: auto !important;
+    overflow: visible !important;
+}
+.main {
+    min-height: 100dvh !important;
+    height: auto !important;
+    overflow: visible !important;
+}
+.view {
+    min-height: calc(100dvh - 76px);
+    overflow: visible !important;
+}
+.sidebar {
+    min-height: 100dvh;
+}
+.modal-body {
+    max-height: calc(88dvh - 120px);
+}

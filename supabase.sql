@@ -38,7 +38,10 @@ create table if not exists public.admins (
     discord text,
     game_nick text,
     current_position text,
-    branch text,
+    rank int check (rank between 1 and 11),
+    custom_position text,
+    branch text default 'Общая администрация',
+    is_leadership boolean not null default false,
     joined_at date,
     last_promotion_at date,
     activity_percent numeric default 0,
@@ -50,6 +53,8 @@ create table if not exists public.admins (
 
 create index if not exists idx_admins_active on public.admins(is_active);
 create index if not exists idx_admins_position on public.admins(current_position);
+create index if not exists idx_admins_rank on public.admins(rank);
+create index if not exists idx_admins_leadership on public.admins(is_leadership);
 
 -- Связь user_profiles -> admins (после создания таблицы admins)
 do $$

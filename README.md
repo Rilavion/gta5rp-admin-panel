@@ -460,3 +460,10 @@ select tablename, policyname from pg_policies where schemaname = 'public';
 ## Лицензия
 
 Используйте свободно для своего GTA5RP-сервера. Удачи и хороших обзвонов! 🎮
+
+---
+
+## LiveRP v2 update
+
+Подробная инструкция по обновлению находится в [`README_V2_UPDATE.md`](./README_V2_UPDATE.md).
+Перед использованием новых рангов 1–11 и вкладки «Руководство» выполните `liverp_update.sql` в Supabase SQL Editor.

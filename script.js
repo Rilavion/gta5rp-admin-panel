@@ -48,6 +48,63 @@ const CURATOR_BONUS = {
 const NIGHT_FROM = 0;    // 00:00
 const NIGHT_TO = 8;      // 08:00 -> ночной коэффициент x2
 
+
+const DEFAULT_APPEARANCE = {
+    theme: 'dark',          // dark / light
+    animations: 'on',       // on / off
+    bgEffect: 'orbs',       // orbs / grid / waves / off
+    density: 'comfortable'  // comfortable / compact
+};
+
+function loadAppearanceSettings() {
+    try {
+        return { ...DEFAULT_APPEARANCE, ...(JSON.parse(localStorage.getItem('liverpAppearance') || '{}')) };
+    } catch {
+        return { ...DEFAULT_APPEARANCE };
+    }
+}
+
+function saveAppearanceSettings(patch) {
+    const next = { ...loadAppearanceSettings(), ...patch };
+    try { localStorage.setItem('liverpAppearance', JSON.stringify(next)); } catch {}
+    applyAppearanceSettings(next);
+    return next;
+}
+
+function applyAppearanceSettings(settings = loadAppearanceSettings()) {
+    document.body.dataset.theme = settings.theme || 'dark';
+    document.body.dataset.animations = settings.animations || 'on';
+    document.body.dataset.bgEffect = settings.bgEffect || 'orbs';
+    document.body.dataset.density = settings.density || 'comfortable';
+}
+
+function rankLabel(rank) {
+    const n = parseInt(rank, 10);
+    return n >= 1 && n <= 11 ? `Ранг ${n}` : 'Без ранга';
+}
+
+function adminPositionLabel(a = {}) {
+    const base = rankLabel(a.rank);
+    const custom = a.custom_position || a.current_position;
+    return custom ? `${base} · ${custom}` : base;
+}
+
+function adminShortLabel(a = {}) {
+    return `${a.display_name || '—'}${a.rank ? ` · R${a.rank}` : ''}${a.custom_position ? ` · ${a.custom_position}` : ''}`;
+}
+
+function normalizeAdminPayload(payload) {
+    const rank = parseInt(payload.rank, 10);
+    const cleanRank = rank >= 1 && rank <= 11 ? rank : null;
+    const custom = (payload.custom_position || '').trim() || null;
+    return {
+        ...payload,
+        rank: cleanRank,
+        custom_position: custom,
+        current_position: custom || (cleanRank ? `Ранг ${cleanRank}` : (payload.current_position || null))
+    };
+}
+
 const ROUTES = {
     dashboard:     { title: 'Главная',                 roles: ['owner','admin','interviewer','viewer'] },
     calls:         { title: 'Обзвоны',                 roles: ['owner','admin','interviewer'] },
@@ -56,6 +113,7 @@ const ROUTES = {
     stats:         { title: 'Статистика',              roles: ['owner','admin','interviewer','viewer'] },
     users:         { title: 'Пользователи',            roles: ['owner','admin'] },
     admins:        { title: 'Состав администрации',    roles: ['owner','admin','interviewer','viewer'] },
+    leadership:    { title: 'Руководство',             roles: ['owner','admin','interviewer','viewer'] },
     discipline:    { title: 'Дисциплинарные наказания',roles: ['owner','admin','viewer'] },
     promotion:     { title: 'Система повышения',       roles: ['owner','admin','viewer'] },
     'promotion-set':{ title:'Настройки повышения',     roles: ['owner','admin'] },
@@ -193,6 +251,7 @@ function calcStatus(percent) {
 // 2. Авторизация / запуск
 // =====================================================================
 async function bootstrap() {
+    applyAppearanceSettings();
     initSupabase();
 
     if (!SB.client) {
@@ -370,6 +429,7 @@ async function handleRoute(force=false) {
             case 'stats':         return await renderStats(view);
             case 'users':         return await renderUsers(view);
             case 'admins':        return await renderAdmins(view);
+            case 'leadership':    return await renderLeadership(view);
             case 'discipline':    return await renderDiscipline(view);
             case 'promotion':     return await renderPromotion(view);
             case 'promotion-set': return await renderPromotionSettings(view);
@@ -432,7 +492,7 @@ async function renderDashboard(view) {
         .sort((a,b)=>b.count-a.count).slice(0,5);
 
     view.innerHTML = `
-        <h2>Главная</h2>
+        <div class="liverp-hero"><h2>LiveRP · Центр управления администрацией</h2><p class="muted">Обзвоны, состав, наказания, ранги, выплаты и контроль руководства в одной панели.</p></div>
         <div class="cards">
             <div class="card accent">  <div class="card-label">Всего обзвонов</div><div class="card-value">${total}</div></div>
             <div class="card success"> <div class="card-label">Прошло</div><div class="card-value">${passed}</div></div>
@@ -488,11 +548,11 @@ async function renderDashboard(view) {
                     <a class="btn btn-sm" href="#promotion">Открыть →</a></div>
                 <div class="table-wrap">
                     <table class="data"><thead><tr>
-                        <th>Админ</th><th>Должность</th><th>Следующая</th>
+                        <th>Админ</th><th>Ранг / должность</th><th>Следующий ранг</th>
                     </tr></thead><tbody>
                     ${readyList.map(r => `<tr>
                         <td>${escapeHtml(r.admin.display_name)}</td>
-                        <td>${escapeHtml(r.admin.current_position||'—')}</td>
+                        <td>${escapeHtml(adminPositionLabel(r.admin))}</td>
                         <td>${escapeHtml(r.next_position||'—')}</td>
                     </tr>`).join('') || `<tr><td colspan="3" class="muted">Нет данных</td></tr>`}
                     </tbody></table>
@@ -560,7 +620,7 @@ async function renderCalls(view) {
                 <div class="form-row"><label>Проводил обучение</label>
                     <select id="c-trainer">
                         <option value="">— не выбрано —</option>
-                        ${admins.map(a => `<option value="${a.id}">${escapeHtml(a.display_name)}</option>`).join('')}
+                        ${admins.map(a => `<option value="${a.id}">${escapeHtml(adminShortLabel(a))}</option>`).join('')}
                     </select></div>
                 <div class="form-row"><label>Ссылка на откат обзвона</label><input id="c-replay-call"/></div>
                 <div class="form-row"><label>Ссылка на откат обучения</label><input id="c-replay-train"/></div>
@@ -605,7 +665,7 @@ async function renderCalls(view) {
 
             <div class="live-score">
                 <div class="ls-item"><div class="ls-label">Баллов</div><div class="ls-val" id="ls-pts">0</div></div>
-                <div class="ls-item"><div class="ls-label">Отвечено / всего</div><div class="ls-val" id="ls-max">0 / ${questions.length}</div></div>
+                <div class="ls-item"><div class="ls-label">Максимум</div><div class="ls-val" id="ls-max">${questions.length}</div></div>
                 <div class="ls-item"><div class="ls-label">Процент</div><div class="ls-val" id="ls-pct">0%</div></div>
                 <div class="ls-item"><div class="ls-label">Статус</div><div class="ls-val" id="ls-status">${statusBadge('failed')}</div></div>
                 <div class="ls-actions">
@@ -658,60 +718,35 @@ async function renderCalls(view) {
     recalcLive();
 }
 
-function getSelectedQuestionAnswers() {
-    const answers = [];
-    let pts = 0;
-
-    document.querySelectorAll('.q-item').forEach(item => {
-        const sel = item.querySelector('.q-opt.sel-1, .q-opt.sel-h, .q-opt.sel-0');
-        if (!sel) return; // не отвеченный вопрос не участвует в оценке
-
-        const score = parseFloat(sel.dataset.score);
-        pts += score;
-
-        const cm = item.querySelector('[data-q-comment]')?.value.trim() || '';
-        answers.push({
-            question_id: item.dataset.qid,
-            score,
-            comment: cm || null
-        });
-    });
-
-    const answered = answers.length;
-    const total = document.querySelectorAll('.q-item').length;
-    const pct = answered ? Math.round(pts / answered * 100) : 0;
-
-    return { answers, pts, answered, total, pct };
-}
-
 function recalcLive() {
-    const { pts, answered, total, pct } = getSelectedQuestionAnswers();
+    let pts = 0, max = 0;
+    document.querySelectorAll('.q-item').forEach(item => {
+        max += 1;
+        const sel = item.querySelector('.q-opt.sel-1, .q-opt.sel-h, .q-opt.sel-0');
+        if (sel) pts += parseFloat(sel.dataset.score);
+    });
+    const pct = max ? Math.round(pts/max*100) : 0;
     const status = calcStatus(pct);
-
-    const ptsEl = document.getElementById('ls-pts');
-    if (ptsEl) ptsEl.textContent = Number.isInteger(pts) ? String(pts) : pts.toFixed(1);
-
-    const maxEl = document.getElementById('ls-max');
-    if (maxEl) maxEl.textContent = `${answered} / ${total}`;
-
-    const pctEl = document.getElementById('ls-pct');
-    if (pctEl) pctEl.textContent = pct + '%';
-
-    const stEl  = document.getElementById('ls-status');
-    if (stEl) stEl.innerHTML = answered ? statusBadge(status) : '<span class="badge neutral">Нет ответов</span>';
+    const ptsEl = document.getElementById('ls-pts'); if (ptsEl) ptsEl.textContent = pts;
+    const maxEl = document.getElementById('ls-max'); if (maxEl) maxEl.textContent = max;
+    const pctEl = document.getElementById('ls-pct'); if (pctEl) pctEl.textContent = pct + '%';
+    const stEl  = document.getElementById('ls-status'); if (stEl) stEl.innerHTML = statusBadge(status);
 }
 
 async function saveCallSessionAction(mode) {
     const name = $('#c-name').value.trim();
     if (!name) { toast('Укажите имя кандидата','warning'); return; }
-
-    const { answers, pts, answered, total, pct } = getSelectedQuestionAnswers();
-
-    if (mode !== 'draft' && answered === 0) {
-        toast('Нужно оценить хотя бы один вопрос. Неотвеченные вопросы не учитываются.', 'warning');
-        return;
-    }
-
+    const answers = [];
+    let pts = 0, max = 0;
+    document.querySelectorAll('.q-item').forEach(item => {
+        max += 1;
+        const sel = item.querySelector('.q-opt.sel-1, .q-opt.sel-h, .q-opt.sel-0');
+        const score = sel ? parseFloat(sel.dataset.score) : 0;
+        if (sel) pts += score;
+        const cm = item.querySelector('[data-q-comment]').value.trim();
+        answers.push({ question_id: item.dataset.qid, score, comment: cm || null });
+    });
+    const pct = max ? Math.round(pts/max*100) : 0;
     const finalStatus = mode === 'draft' ? 'draft' : calcStatus(pct);
 
     try {
@@ -733,15 +768,14 @@ async function saveCallSessionAction(mode) {
             call_replay_url: $('#c-replay-call').value.trim() || null,
             training_replay_url: $('#c-replay-train').value.trim() || null,
             total_points: pts,
-            // max_points теперь = количество реально отвеченных вопросов, а не все активные вопросы
-            max_points: answered,
+            max_points: max,
             percent: pct,
             status: finalStatus,
             comment: $('#c-comment').value.trim() || null,
             extra_comment: $('#c-extra').value.trim() || null
         }, answers);
 
-        toast(`Обзвон сохранён (${pts}/${answered} из ${total}, ${pct}%, ${finalStatus})`,'success');
+        toast(`Обзвон сохранён (${pct}%, ${finalStatus})`,'success');
         handleRoute(true);
     } catch (e) {
         console.error(e);
@@ -760,6 +794,18 @@ async function renderQuestions(view) {
 
     view.innerHTML = `
         <h2>Конструктор вопросов</h2>
+        <div class="panel">
+            <div class="panel-header"><h3>Категории вопросов</h3></div>
+            <div class="toolbar">
+                ${cats.map(c => `<span class="badge accent" data-cat-name="${escapeHtml(c)}">${escapeHtml(c)}</span>`).join('') || '<span class="muted">Категорий пока нет</span>'}
+            </div>
+            ${canEdit ? `<p class="muted">Категории полностью кастомные: добавляйте их при создании вопроса или переименовывайте существующие.</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <select id="cat-manage-select"><option value="">Выберите категорию</option>${cats.map(c=>`<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}</select>
+                <button class="btn btn-sm" id="btn-rename-cat">Переименовать</button>
+                <button class="btn btn-sm btn-danger" id="btn-disable-cat">Отключить вопросы категории</button>
+            </div>` : ''}
+        </div>
         ${canEdit ? `<div class="panel">
             <div class="panel-header"><h3>Добавить вопрос</h3></div>
             <div class="form-grid">
@@ -860,6 +906,40 @@ async function renderQuestions(view) {
     $('#q-sort').onchange = render;
 
     if (canEdit) {
+        const renameCatBtn = $('#btn-rename-cat');
+        if (renameCatBtn) renameCatBtn.onclick = async () => {
+            const oldCat = $('#cat-manage-select').value;
+            if (!oldCat) return toast('Выберите категорию','warning');
+            const nextCat = prompt('Новое название категории:', oldCat);
+            if (!nextCat || nextCat.trim() === oldCat) return;
+            const affected = list.filter(q => q.category === oldCat);
+            if (!await confirmDialog(`Переименовать категорию «${oldCat}» у ${affected.length} вопросов?`)) return;
+            try {
+                for (const q of affected) {
+                    const upd = await updateQuestion(q.id, { category: nextCat.trim() });
+                    Object.assign(q, upd);
+                }
+                toast('Категория переименована','success');
+                handleRoute(true);
+            } catch (e) { toast('Ошибка: '+e.message,'danger'); }
+        };
+        const disableCatBtn = $('#btn-disable-cat');
+        if (disableCatBtn) disableCatBtn.onclick = async () => {
+            const oldCat = $('#cat-manage-select').value;
+            if (!oldCat) return toast('Выберите категорию','warning');
+            const affected = list.filter(q => q.category === oldCat && q.is_active);
+            if (!affected.length) return toast('В этой категории нет активных вопросов','warning');
+            if (!await confirmDialog(`Отключить все активные вопросы категории «${oldCat}»? История не сломается.`)) return;
+            try {
+                for (const q of affected) {
+                    const upd = await updateQuestion(q.id, { is_active: false });
+                    Object.assign(q, upd);
+                }
+                toast('Категория отключена','success');
+                render();
+            } catch (e) { toast('Ошибка: '+e.message,'danger'); }
+        };
+
         $('#btn-add-q').onclick = async () => {
             const category = $('#nq-cat').value.trim();
             const text = $('#nq-text').value.trim();
@@ -1019,6 +1099,7 @@ async function renderHistory(view) {
                 <td>${escapeHtml((c.comment||'').slice(0,40))}</td>
                 <td class="actions">
                     <button class="btn btn-sm" data-act="view">👁</button>
+                    ${hasRole('owner','admin') ? '<button class="btn btn-sm" data-act="edit">✎</button>' : ''}
                     ${hasRole('owner','admin') ? '<button class="btn btn-sm btn-danger" data-act="del">🗑</button>' : ''}
                 </td>
             </tr>
@@ -1049,10 +1130,120 @@ async function renderHistory(view) {
             catch(e){ toast('Ошибка: '+e.message,'danger'); }
         } else if (btn.dataset.act === 'view') {
             await showCallDetails(c);
+        } else if (btn.dataset.act === 'edit') {
+            await editCallSessionModal(c, () => handleRoute(true));
         }
     });
 
     render();
+}
+
+
+async function editCallSessionModal(c, onSave) {
+    const [answers, questions, admins] = await Promise.all([
+        loadCallAnswers(c.id),
+        loadQuestions(true),
+        loadAdmins(false)
+    ]);
+    const answerMap = new Map(answers.map(a => [a.question_id, a]));
+    const allQuestions = [...questions];
+    for (const a of answers) {
+        if (a.question && !allQuestions.some(q => q.id === a.question.id)) {
+            allQuestions.push({ id: a.question.id, category: a.question.category, question_text: a.question.question_text, order_index: 9999 });
+        }
+    }
+    allQuestions.sort((a,b) => String(a.category).localeCompare(String(b.category)) || (a.order_index||0)-(b.order_index||0));
+
+    openModal({
+        title: `Редактирование обзвона: ${c.candidate?.display_name || '—'}`,
+        large: true,
+        body: `
+            <div class="form-grid">
+                <div class="form-row"><label>Имя / ник кандидата</label><input id="ec-name" value="${escapeHtml(c.candidate?.display_name||'')}"/></div>
+                <div class="form-row"><label>Discord</label><input id="ec-discord" value="${escapeHtml(c.candidate?.discord||'')}"/></div>
+                <div class="form-row"><label>Игровой ник</label><input id="ec-game" value="${escapeHtml(c.candidate?.game_nick||'')}"/></div>
+                <div class="form-row"><label>Дата обзвона</label><input id="ec-date" type="date" value="${c.call_date||''}"/></div>
+                <div class="form-row"><label>Проводил обучение</label><select id="ec-trainer"><option value="">— не выбрано —</option>${admins.map(a=>`<option value="${a.id}" ${c.trainer_admin_id===a.id?'selected':''}>${escapeHtml(adminShortLabel(a))}</option>`).join('')}</select></div>
+                <div class="form-row"><label>Ссылка на откат обзвона / видео</label><input id="ec-call-url" value="${escapeHtml(c.call_replay_url||'')}" placeholder="https://..."/></div>
+                <div class="form-row"><label>Ссылка на откат обучения</label><input id="ec-train-url" value="${escapeHtml(c.training_replay_url||'')}" placeholder="https://..."/></div>
+                <div class="form-row"><label>Статус</label><select id="ec-status"><option value="auto">Пересчитать автоматически</option><option value="passed" ${c.status==='passed'?'selected':''}>Прошёл</option><option value="retake" ${c.status==='retake'?'selected':''}>На пересдачу</option><option value="failed" ${c.status==='failed'?'selected':''}>Не прошёл</option><option value="draft" ${c.status==='draft'?'selected':''}>Черновик</option></select></div>
+                <div class="form-row" style="grid-column:1/-1"><label>Комментарий</label><textarea id="ec-comment" rows="2">${escapeHtml(c.comment||'')}</textarea></div>
+                <div class="form-row" style="grid-column:1/-1"><label>Дополнительно</label><textarea id="ec-extra" rows="2">${escapeHtml(c.extra_comment||'')}</textarea></div>
+            </div>
+            <h3>Ответы и оценка</h3>
+            <p class="muted">Пустой балл = вопрос не участвует в расчёте. Можно добавить откат позже и пересчитать результат.</p>
+            <div class="table-wrap"><table class="data"><thead><tr><th>Категория</th><th>Вопрос</th><th style="width:130px">Балл</th><th>Комментарий</th></tr></thead><tbody>
+                ${allQuestions.map(q => {
+                    const a = answerMap.get(q.id);
+                    const val = a ? String(a.score) : '';
+                    return `<tr data-qid="${q.id}"><td>${escapeHtml(q.category||'—')}</td><td>${escapeHtml(q.question_text||'—')}</td><td><select data-edit-score><option value="" ${val===''?'selected':''}>—</option><option value="1" ${val==='1'?'selected':''}>1</option><option value="0.5" ${val==='0.5'?'selected':''}>0.5</option><option value="0" ${val==='0'?'selected':''}>0</option></select></td><td><input data-edit-comment value="${escapeHtml(a?.comment||'')}"/></td></tr>`;
+                }).join('')}
+            </tbody></table></div>
+            <div class="live-score" style="position:static"><div class="ls-item"><div class="ls-label">Итог</div><div class="ls-val" id="ec-preview">—</div></div></div>
+        `,
+        footer: `<button class="btn" data-cancel>Отмена</button><button class="btn btn-primary" data-save>Сохранить изменения</button>`
+    });
+
+    const recalc = () => {
+        let pts = 0, max = 0;
+        $$('.modal-body tr[data-qid]').forEach(row => {
+            const val = row.querySelector('[data-edit-score]').value;
+            if (val === '') return;
+            pts += parseFloat(val);
+            max += 1;
+        });
+        const pct = max ? Math.round(pts / max * 100) : 0;
+        const el = $('#ec-preview');
+        if (el) el.innerHTML = `${Number.isInteger(pts)?pts:pts.toFixed(1)} / ${max} · ${pct}% ${max ? statusBadge(calcStatus(pct)) : '<span class="badge neutral">Нет ответов</span>'}`;
+        return { pts, max, pct };
+    };
+    $$('.modal-body [data-edit-score]').forEach(sel => sel.addEventListener('change', recalc));
+    recalc();
+
+    $('[data-cancel]').onclick = closeModal;
+    $('[data-save]').onclick = async () => {
+        const { pts, max, pct } = recalc();
+        const statusChoice = $('#ec-status').value;
+        const finalStatus = statusChoice === 'auto' ? calcStatus(pct) : statusChoice;
+        const rows = $$('.modal-body tr[data-qid]');
+        const editedAnswers = rows.map(row => {
+            const score = row.querySelector('[data-edit-score]').value;
+            if (score === '') return null;
+            return {
+                question_id: row.dataset.qid,
+                score: parseFloat(score),
+                comment: row.querySelector('[data-edit-comment]').value.trim() || null
+            };
+        }).filter(Boolean);
+        try {
+            if (c.candidate_id) {
+                await updateCandidate(c.candidate_id, {
+                    display_name: $('#ec-name').value.trim() || c.candidate?.display_name,
+                    discord: $('#ec-discord').value.trim() || null,
+                    game_nick: $('#ec-game').value.trim() || null,
+                    status: finalStatus === 'draft' ? 'new' : finalStatus
+                });
+            }
+            await updateCallSession(c.id, {
+                trainer_admin_id: $('#ec-trainer').value || null,
+                call_date: $('#ec-date').value,
+                call_replay_url: $('#ec-call-url').value.trim() || null,
+                training_replay_url: $('#ec-train-url').value.trim() || null,
+                total_points: pts,
+                max_points: max,
+                percent: pct,
+                status: finalStatus,
+                comment: $('#ec-comment').value.trim() || null,
+                extra_comment: $('#ec-extra').value.trim() || null
+            });
+            await replaceCallAnswers(c.id, editedAnswers);
+            closeModal();
+            toast('Обзвон обновлён','success');
+            onSave?.();
+        } catch (e) {
+            toast('Ошибка сохранения: '+e.message,'danger',7000);
+        }
+    };
 }
 
 async function showCallDetails(c) {
@@ -1234,14 +1425,13 @@ async function renderUsers(view) {
     if (!hasRole('owner','admin')) { view.innerHTML = `<div class="empty">Нет доступа</div>`; return; }
     const [users, admins] = await Promise.all([loadUsers(), loadAdmins()]);
     State.cache.users = users; State.cache.admins = admins;
-    const canManageUsers = hasRole('owner');
 
     view.innerHTML = `
         <h2>Пользователи / Администраторы доступа</h2>
         <div class="panel">
             <div class="panel-header">
-                <h3>Пользователи системы</h3>
-                ${canManageUsers ? `<button class="btn btn-primary" id="btn-add-user">+ Создать пользователя</button>`:''}
+                <h3>Профили пользователей</h3>
+                ${hasRole('owner') ? `<button class="btn btn-primary" id="btn-add-user">+ Создать профиль</button>`:''}
             </div>
             <div class="toolbar">
                 <input id="u-search" placeholder="Поиск..."/>
@@ -1260,8 +1450,8 @@ async function renderUsers(view) {
                 </tr></thead><tbody></tbody></table>
             </div>
             <p class="muted" style="margin-top:10px">
-                Пользователь создаётся прямо отсюда через Supabase Edge Function <code>manage-user</code>.
-                Один раз задеплойте функцию — дальше owner сможет создавать аккаунты без захода в Supabase Dashboard.
+                Поле <b>id</b> — это UUID из <code>auth.users</code> (создаётся в Supabase Dashboard или Edge Function).
+                Здесь создаётся/редактируется только <b>профиль</b>.
             </p>
         </div>
     `;
@@ -1277,7 +1467,7 @@ async function renderUsers(view) {
         $('#u-table tbody').innerHTML = rows.map(u => {
             const admin = admins.find(a => a.id === u.admin_id);
             return `<tr data-id="${u.id}">
-                <td><code style="font-size:11px">${escapeHtml(String(u.id || '').slice(0,8))}…</code></td>
+                <td><code style="font-size:11px">${escapeHtml(u.id.slice(0,8))}…</code></td>
                 <td>${escapeHtml(u.email||'—')}</td>
                 <td>${escapeHtml(u.display_name||'—')}</td>
                 <td>${roleBadge(u.access_role)}</td>
@@ -1285,10 +1475,8 @@ async function renderUsers(view) {
                 <td>${u.is_active ? '<span class="badge success">Да</span>' : '<span class="badge danger">Нет</span>'}</td>
                 <td>${fmtDate(u.created_at)}</td>
                 <td class="actions">
-                    ${canManageUsers ? `
-                        <button class="btn btn-sm" data-act="edit">✎</button>
-                        <button class="btn btn-sm" data-act="toggle">${u.is_active?'⏸':'▶'}</button>
-                    ` : '<span class="muted">только просмотр</span>'}
+                    <button class="btn btn-sm" data-act="edit">✎</button>
+                    <button class="btn btn-sm" data-act="toggle">${u.is_active?'⏸':'▶'}</button>
                 </td>
             </tr>`;
         }).join('') || `<tr><td colspan="8" class="muted">Нет данных</td></tr>`;
@@ -1297,36 +1485,20 @@ async function renderUsers(view) {
     $('#u-search').oninput = render;
     $('#u-role').onchange = render;
 
-    if (canManageUsers) {
+    if (hasRole('owner')) {
         $('#btn-add-user').onclick = () => userProfileModal(null, admins, () => handleRoute(true));
-
-        $('#u-table tbody').addEventListener('click', async (e) => {
-            const btn = e.target.closest('button[data-act]'); if (!btn) return;
-            const id = btn.closest('tr').dataset.id;
-            const u = users.find(x => x.id === id);
-            if (!u) return;
-
-            if (btn.dataset.act === 'toggle') {
-                try {
-                    const saved = await adminUpdateUser({
-                        id: u.id,
-                        email: u.email,
-                        display_name: u.display_name,
-                        access_role: u.access_role,
-                        admin_id: u.admin_id,
-                        is_active: !u.is_active
-                    });
-                    Object.assign(u, saved);
-                    render();
-                    toast('Готово','success');
-                } catch(er) {
-                    toast('Ошибка: '+er.message,'danger');
-                }
-            } else if (btn.dataset.act === 'edit') {
-                userProfileModal(u, admins, (upd) => { Object.assign(u, upd); render(); });
-            }
-        });
     }
+    $('#u-table tbody').addEventListener('click', async (e) => {
+        const btn = e.target.closest('button[data-act]'); if (!btn) return;
+        const id = btn.closest('tr').dataset.id;
+        const u = users.find(x => x.id === id);
+        if (btn.dataset.act === 'toggle') {
+            try { const upd = await disableUser(id, u.is_active); Object.assign(u, upd); render(); toast('Готово','success'); }
+            catch(er){ toast('Ошибка: '+er.message,'danger'); }
+        } else if (btn.dataset.act === 'edit') {
+            userProfileModal(u, admins, (upd) => { Object.assign(u, upd); render(); });
+        }
+    });
 
     render();
 }
@@ -1334,17 +1506,13 @@ async function renderUsers(view) {
 function userProfileModal(u, admins, onSave) {
     const isNew = !u;
     openModal({
-        title: isNew ? 'Создать пользователя' : 'Редактирование пользователя',
+        title: isNew ? 'Создать профиль пользователя' : 'Профиль пользователя',
         body: `
             <div class="form-grid">
-                ${isNew ? '' : `
-                <div class="form-row"><label>ID пользователя</label>
-                    <input id="up-id" value="${u?.id||''}" readonly /></div>`}
-                <div class="form-row"><label>Email для входа *</label>
-                    <input id="up-email" type="email" value="${escapeHtml(u?.email||'')}" placeholder="user@example.com"/></div>
-                <div class="form-row"><label>Пароль ${isNew ? '*' : '(оставьте пустым, если не менять)'}</label>
-                    <input id="up-password" type="password" autocomplete="new-password" placeholder="${isNew ? 'Минимум 6 символов' : 'Новый пароль'}"/></div>
-                <div class="form-row"><label>Имя / ник</label><input id="up-name" value="${escapeHtml(u?.display_name||'')}"/></div>
+                <div class="form-row"><label>UUID пользователя (из auth.users) *</label>
+                    <input id="up-id" value="${u?.id||''}" ${u?'readonly':''} placeholder="00000000-0000-..."/></div>
+                <div class="form-row"><label>Email</label><input id="up-email" value="${u?.email||''}"/></div>
+                <div class="form-row"><label>Имя / ник</label><input id="up-name" value="${u?.display_name||''}"/></div>
                 <div class="form-row"><label>Роль</label>
                     <select id="up-role">
                         <option value="owner"       ${u?.access_role==='owner'?'selected':''}>owner</option>
@@ -1352,7 +1520,7 @@ function userProfileModal(u, admins, onSave) {
                         <option value="interviewer" ${u?.access_role==='interviewer'?'selected':''}>interviewer</option>
                         <option value="viewer"      ${u?.access_role==='viewer'?'selected':''}>viewer</option>
                     </select></div>
-                <div class="form-row"><label>Связь с админом из состава</label>
+                <div class="form-row"><label>Привязать аккаунт к записи в составе</label>
                     <select id="up-admin">
                         <option value="">— нет —</option>
                         ${admins.map(a => `<option value="${a.id}" ${u?.admin_id===a.id?'selected':''}>${escapeHtml(a.display_name)}</option>`).join('')}
@@ -1364,44 +1532,29 @@ function userProfileModal(u, admins, onSave) {
                     </select></div>
             </div>
             <p class="muted" style="margin-top:10px">
-                Аккаунт создаётся через Edge Function <code>manage-user</code>. 
-                Secret/service_role ключ хранится только в Supabase Function, не в GitHub Pages.
+                💡 Чтобы создать сам Auth-аккаунт — перейдите в Supabase Dashboard → Authentication → Add user,
+                скопируйте оттуда UUID и вставьте сюда.
             </p>
         `,
         footer: `<button class="btn" data-cancel>Отмена</button>
-                 <button class="btn btn-primary" data-save>${isNew ? 'Создать' : 'Сохранить'}</button>`
+                 <button class="btn btn-primary" data-save>Сохранить</button>`
     });
     $('[data-cancel]').onclick = closeModal;
     $('[data-save]').onclick = async () => {
-        const email = $('#up-email').value.trim();
-        const password = $('#up-password').value;
-        if (!email) return toast('Укажите email','warning');
-        if (isNew && password.length < 6) return toast('Пароль должен быть минимум 6 символов','warning');
-        if (!isNew && password && password.length < 6) return toast('Новый пароль должен быть минимум 6 символов','warning');
-
+        const id = $('#up-id').value.trim();
+        if (!id) return toast('Укажите UUID','warning');
         const payload = {
-            id: u?.id,
-            email,
-            password: password || undefined,
+            id,
+            email: $('#up-email').value.trim() || null,
             display_name: $('#up-name').value.trim() || null,
             access_role: $('#up-role').value,
             admin_id: $('#up-admin').value || null,
             is_active: $('#up-active').value === 'true'
         };
-
         try {
-            const saved = isNew ? await adminCreateUser(payload) : await adminUpdateUser(payload);
-            onSave(saved);
-            closeModal();
-            toast(isNew ? 'Пользователь создан' : 'Пользователь обновлён','success');
-        } catch (e) {
-            const msg = e.message || String(e);
-            if (msg.includes('FunctionsFetchError') || msg.includes('not found')) {
-                toast('Edge Function manage-user не настроена или не задеплоена', 'danger', 7000);
-            } else {
-                toast('Ошибка: '+msg,'danger', 7000);
-            }
-        }
+            const saved = await saveUserProfile(payload);
+            onSave(saved); closeModal(); toast('Сохранено','success');
+        } catch (e) { toast('Ошибка: '+e.message,'danger'); }
     };
 }
 
@@ -1425,8 +1578,8 @@ async function renderAdmins(view) {
             </div>
             <div class="toolbar">
                 <input id="a-search" placeholder="Поиск..."/>
-                <select id="a-pos"><option value="">Все должности</option>
-                ${[...new Set(admins.map(a=>a.current_position).filter(Boolean))].map(p=>`<option>${escapeHtml(p)}</option>`).join('')}
+                <select id="a-pos"><option value="">Все ранги / должности</option>
+                ${[...new Set(admins.map(a=>adminPositionLabel(a)).filter(Boolean))].map(p=>`<option>${escapeHtml(p)}</option>`).join('')}
                 </select>
                 <select id="a-active">
                     <option value="">Все</option><option value="true">Активные</option><option value="false">Архив</option>
@@ -1434,7 +1587,7 @@ async function renderAdmins(view) {
             </div>
             <div class="table-wrap">
                 <table class="data" id="a-table"><thead><tr>
-                    <th>№</th><th>Имя</th><th>Discord</th><th>Должность</th><th>Ветка</th>
+                    <th>№</th><th>Имя</th><th>Discord</th><th>Ранг</th><th>Кастомная должность</th><th>Отдел / направление</th>
                     <th>Вступил</th><th>Повышение</th><th class="num">Активность</th>
                     <th class="num">Наказания</th><th class="num">Обзвоны</th><th class="num">Обучения</th>
                     <th>Статус</th><th style="width:130px">Действия</th>
@@ -1448,7 +1601,7 @@ async function renderAdmins(view) {
         const pos = $('#a-pos').value;
         const act = $('#a-active').value;
         const rows = admins.filter(a => {
-            if (pos && a.current_position !== pos) return false;
+            if (pos && adminPositionLabel(a) !== pos) return false;
             if (act !== '' && String(a.is_active) !== act) return false;
             if (q && !(
                 (a.display_name||'').toLowerCase().includes(q) ||
@@ -1464,8 +1617,9 @@ async function renderAdmins(view) {
                 <td>${i+1}</td>
                 <td>${escapeHtml(a.display_name)}</td>
                 <td>${escapeHtml(a.discord||'—')}</td>
-                <td>${escapeHtml(a.current_position||'—')}</td>
-                <td>${escapeHtml(a.branch||'—')}</td>
+                <td>${a.rank ? `<span class="rank-pill">R${a.rank}</span>` : '<span class="muted">—</span>'}</td>
+                <td>${escapeHtml(a.custom_position || a.current_position || '—')}</td>
+                <td>${escapeHtml(a.branch||'Общая администрация')}</td>
                 <td>${fmtDate(a.joined_at)}</td>
                 <td>${fmtDate(a.last_promotion_at)}</td>
                 <td class="num">${a.activity_percent||0}%</td>
@@ -1479,11 +1633,11 @@ async function renderAdmins(view) {
                     ${canEdit?`<button class="btn btn-sm btn-danger" data-act="arch">📦</button>`:''}
                 </td>
             </tr>`;
-        }).join('') || `<tr><td colspan="13" class="muted">Нет данных</td></tr>`;
+        }).join('') || `<tr><td colspan="14" class="muted">Нет данных</td></tr>`;
 
         setCurrentCsv(rows.map(a => ({
             display_name: a.display_name, discord: a.discord, game_nick: a.game_nick,
-            position: a.current_position, branch: a.branch, joined_at: a.joined_at,
+            rank: a.rank, custom_position: a.custom_position, rank_position: adminPositionLabel(a), branch: a.branch, joined_at: a.joined_at,
             last_promotion_at: a.last_promotion_at, activity_percent: a.activity_percent,
             is_active: a.is_active
         })), 'admins.csv');
@@ -1524,8 +1678,10 @@ function adminModal(a, onSave) {
                 <div class="form-row"><label>Имя / ник *</label><input id="ad-name" value="${escapeHtml(a?.display_name||'')}"/></div>
                 <div class="form-row"><label>Discord</label><input id="ad-discord" value="${escapeHtml(a?.discord||'')}"/></div>
                 <div class="form-row"><label>Игровой ник</label><input id="ad-game" value="${escapeHtml(a?.game_nick||'')}"/></div>
-                <div class="form-row"><label>Должность</label><input id="ad-pos" value="${escapeHtml(a?.current_position||'')}"/></div>
-                <div class="form-row"><label>Ветка</label><input id="ad-branch" value="${escapeHtml(a?.branch||'')}"/></div>
+                <div class="form-row"><label>Ранг</label><select id="ad-rank"><option value="">—</option>${Array.from({length:11},(_,i)=>i+1).map(n=>`<option value="${n}" ${Number(a?.rank)===n?'selected':''}>Ранг ${n}</option>`).join('')}</select></div>
+                <div class="form-row"><label>Кастомная должность</label><input id="ad-custom-pos" value="${escapeHtml(a?.custom_position||'')}" placeholder="Например: Главный администратор"/></div>
+                <div class="form-row"><label>Отдел / направление</label><input id="ad-branch" value="${escapeHtml(a?.branch||'Общая администрация')}"/></div>
+                <div class="form-row"><label>Руководство</label><select id="ad-lead"><option value="false" ${!a?.is_leadership?'selected':''}>Нет</option><option value="true" ${a?.is_leadership?'selected':''}>Да</option></select></div>
                 <div class="form-row"><label>Дата вступления</label><input id="ad-joined" type="date" value="${a?.joined_at||''}"/></div>
                 <div class="form-row"><label>Последнее повышение</label><input id="ad-prom" type="date" value="${a?.last_promotion_at||''}"/></div>
                 <div class="form-row"><label>Активность %</label><input id="ad-act" type="number" min="0" max="100" value="${a?.activity_percent||0}"/></div>
@@ -1543,15 +1699,18 @@ function adminModal(a, onSave) {
             display_name: name,
             discord: $('#ad-discord').value.trim()||null,
             game_nick: $('#ad-game').value.trim()||null,
-            current_position: $('#ad-pos').value.trim()||null,
-            branch: $('#ad-branch').value.trim()||null,
+            rank: parseInt($('#ad-rank').value) || null,
+            custom_position: $('#ad-custom-pos').value.trim() || null,
+            current_position: $('#ad-custom-pos').value.trim() || ($('#ad-rank').value ? `Ранг ${$('#ad-rank').value}` : null),
+            branch: $('#ad-branch').value.trim()||'Общая администрация',
+            is_leadership: $('#ad-lead').value === 'true',
             joined_at: $('#ad-joined').value||null,
             last_promotion_at: $('#ad-prom').value||null,
             activity_percent: parseFloat($('#ad-act').value)||0,
             comment: $('#ad-com').value.trim()||null
         };
         try {
-            const saved = isNew ? await createAdmin(payload) : await updateAdmin(a.id, payload);
+            const saved = isNew ? await createAdmin(normalizeAdminPayload(payload)) : await updateAdmin(a.id, normalizeAdminPayload(payload));
             onSave(saved); closeModal(); toast('Сохранено','success');
         } catch (e) { toast('Ошибка: '+e.message,'danger'); }
     };
@@ -1567,7 +1726,7 @@ function showAdminCard(a, calls, discipline) {
             <div class="form-grid">
                 <div class="form-row"><label>Discord</label><div>${escapeHtml(a.discord||'—')}</div></div>
                 <div class="form-row"><label>Игр. ник</label><div>${escapeHtml(a.game_nick||'—')}</div></div>
-                <div class="form-row"><label>Должность</label><div>${escapeHtml(a.current_position||'—')}</div></div>
+                <div class="form-row"><label>Ранг / должность</label><div>${escapeHtml(adminPositionLabel(a))}</div></div>
                 <div class="form-row"><label>Ветка</label><div>${escapeHtml(a.branch||'—')}</div></div>
                 <div class="form-row"><label>Вступил</label><div>${fmtDate(a.joined_at)}</div></div>
                 <div class="form-row"><label>Активность</label><div>${a.activity_percent||0}%</div></div>
@@ -1600,6 +1759,42 @@ function showAdminCard(a, calls, discipline) {
     $('[data-cancel]').onclick = closeModal;
 }
 
+
+// =====================================================================
+// 11. Руководство
+// =====================================================================
+async function renderLeadership(view) {
+    const [admins, discipline, calls] = await Promise.all([loadAdmins(false), loadDisciplineRecords(), loadCallHistory()]);
+    const leaders = admins
+        .filter(a => a.is_leadership || Number(a.rank) >= 9 || /руковод|глав|куратор|owner|директор/i.test(`${a.custom_position||''} ${a.current_position||''} ${a.branch||''}`))
+        .sort((a,b) => (Number(b.rank)||0) - (Number(a.rank)||0) || String(a.display_name).localeCompare(String(b.display_name)));
+
+    view.innerHTML = `
+        <div class="liverp-hero"><h2>👑 Руководство LiveRP</h2><p class="muted">Отдельная витрина руководящего состава: ранги, направления, активность, наказания и участие в обучении.</p></div>
+        <div class="cards">
+            <div class="card accent"><div class="card-label">Руководителей</div><div class="card-value">${leaders.length}</div></div>
+            <div class="card success"><div class="card-label">Активных</div><div class="card-value">${leaders.filter(a=>a.is_active).length}</div></div>
+            <div class="card danger"><div class="card-label">Активных наказаний</div><div class="card-value">${discipline.filter(d=>leaders.some(a=>a.id===d.admin_id) && d.status==='active').length}</div></div>
+        </div>
+        <div class="cards">
+            ${leaders.map(a => {
+                const activePuns = discipline.filter(d => d.admin_id === a.id && d.status === 'active').length;
+                const trainings = calls.filter(c => c.trainer_admin_id === a.id).length;
+                const initials = String(a.display_name||'?').split(/\s+/).slice(0,2).map(x=>x[0]).join('').toUpperCase();
+                return `<div class="card leader-card">
+                    <div class="leader-avatar">${escapeHtml(initials)}</div>
+                    <div>
+                        <div style="font-weight:800;font-size:16px">${escapeHtml(a.display_name||'—')}</div>
+                        <div style="margin-top:4px">${a.rank ? `<span class="rank-pill">R${a.rank}</span>` : ''} <span class="dim">${escapeHtml(a.custom_position || a.current_position || 'Роль не указана')}</span></div>
+                        <div class="muted" style="margin-top:6px">${escapeHtml(a.branch || 'Общая администрация')}</div>
+                        <div class="muted" style="margin-top:6px">Discord: ${escapeHtml(a.discord||'—')} · Обучений: ${trainings} · Наказаний: ${activePuns}</div>
+                    </div>
+                </div>`;
+            }).join('') || `<div class="empty">Руководство пока не отмечено. В карточке администратора включите поле «Руководство» или назначьте ранг 9–11.</div>`}
+        </div>
+    `;
+}
+
 // =====================================================================
 // 11. Дисциплинарные наказания
 // =====================================================================
@@ -1616,10 +1811,10 @@ async function renderDiscipline(view) {
                 <div class="form-row"><label>Администратор *</label>
                     <select id="d-admin">
                         <option value="">—</option>
-                        ${admins.filter(a=>a.is_active).map(a=>`<option value="${a.id}">${escapeHtml(a.display_name)}</option>`).join('')}
+                        ${admins.filter(a=>a.is_active).map(a=>`<option value="${a.id}" data-position="${escapeHtml(adminPositionLabel(a))}">${escapeHtml(adminShortLabel(a))}</option>`).join('')}
                     </select></div>
                 <div class="form-row"><label>Дата</label><input id="d-date" type="date" value="${new Date().toISOString().slice(0,10)}"/></div>
-                <div class="form-row"><label>Должность</label><input id="d-pos"/></div>
+                <div class="form-row"><label>Ранг / должность</label><input id="d-pos" readonly placeholder="Выберите администратора — подтянется автоматически"/></div>
                 <div class="form-row"><label>Тип</label>
                     <select id="d-type">
                         <option value="warning">Предупреждение</option>
@@ -1649,7 +1844,7 @@ async function renderDiscipline(view) {
             <div class="panel-header"><h3>История (${records.length})</h3></div>
             <div class="toolbar">
                 <select id="d-f-admin"><option value="">Все админы</option>
-                    ${admins.map(a=>`<option value="${a.id}">${escapeHtml(a.display_name)}</option>`).join('')}
+                    ${admins.map(a=>`<option value="${a.id}" data-position="${escapeHtml(adminPositionLabel(a))}">${escapeHtml(adminShortLabel(a))}</option>`).join('')}
                 </select>
                 <select id="d-f-status"><option value="">Все статусы</option>
                     <option value="active">Активно</option>
@@ -1668,7 +1863,7 @@ async function renderDiscipline(view) {
             </div>
             <div class="table-wrap">
                 <table class="data" id="d-table"><thead><tr>
-                    <th>№</th><th>Дата</th><th>Админ</th><th>Должность</th><th>Тип</th>
+                    <th>№</th><th>Дата</th><th>Админ</th><th>Ранг / должность</th><th>Тип</th>
                     <th>Причина</th><th>Кто выдал</th><th>До</th><th>Статус</th>
                     <th>Комментарий</th><th style="width:130px">Действия</th>
                 </tr></thead><tbody></tbody></table>
@@ -1713,6 +1908,10 @@ async function renderDiscipline(view) {
     $('#d-f-admin').onchange = $('#d-f-status').onchange = $('#d-f-type').onchange = render;
 
     if (canEdit) {
+        $('#d-admin').onchange = () => {
+            const opt = $('#d-admin').selectedOptions[0];
+            $('#d-pos').value = opt?.dataset?.position || '';
+        };
         $('#btn-add-d').onclick = async () => {
             const adminId = $('#d-admin').value;
             if (!adminId) return toast('Выберите администратора','warning');
@@ -1775,7 +1974,7 @@ async function renderPromotion(view) {
             </div>
             <div class="table-wrap">
                 <table class="data"><thead><tr>
-                    <th>№</th><th>Админ</th><th>Должность</th><th>Следующая</th>
+                    <th>№</th><th>Админ</th><th>Ранг / должность</th><th>Следующий ранг</th>
                     <th class="num">Дней</th><th class="num">Обзвоны</th><th class="num">Обучения</th>
                     <th class="num">Активные нак.</th><th>Готовность</th><th>Статус</th>
                     <th style="width:220px">Действия</th>
@@ -1785,7 +1984,7 @@ async function renderPromotion(view) {
                     return `<tr>
                         <td>${i+1}</td>
                         <td>${escapeHtml(r.admin.display_name)}</td>
-                        <td>${escapeHtml(r.admin.current_position||'—')}</td>
+                        <td>${escapeHtml(adminPositionLabel(r.admin))}</td>
                         <td>${escapeHtml(r.next_position||'—')}</td>
                         <td class="num">${r.days||0}${r.setting?` / ${r.setting.min_days}`:''} ${c.days?'✔':'✖'}</td>
                         <td class="num">${r.callsCount||0}${r.setting?` / ${r.setting.min_calls}`:''} ${c.calls?'✔':'✖'}</td>
@@ -1837,12 +2036,12 @@ async function renderPromotionSettings(view) {
     view.innerHTML = `
         <h2>Настройки повышения</h2>
         <div class="panel">
-            <div class="panel-header"><h3>Требования по должностям</h3>
+            <div class="panel-header"><h3>Требования по рангам</h3>
                 ${hasRole('owner') ? `<button class="btn btn-primary" id="btn-add-set">+ Добавить должность</button>` : ''}
             </div>
             <div class="table-wrap">
                 <table class="data"><thead><tr>
-                    <th>Должность</th><th>Следующая</th><th class="num">Мин. дней</th>
+                    <th>Ранг / должность</th><th>Следующий ранг</th><th class="num">Мин. дней</th>
                     <th class="num">Обзвоны</th><th class="num">Обучения</th>
                     <th class="num">Макс. нак.</th><th class="num">Активность %</th>
                     <th>Доп. условия</th><th style="width:120px">Действия</th>
@@ -1880,7 +2079,7 @@ function promoSetModal(s, onSave) {
         title: isNew ? 'Новая должность' : 'Редактирование',
         body: `
             <div class="form-grid">
-                <div class="form-row"><label>Должность *</label><input id="ps-pos" value="${escapeHtml(s?.position_name||'')}" ${s?'readonly':''}/></div>
+                <div class="form-row"><label>Ранг / должность *</label><input id="ps-pos" value="${escapeHtml(s?.position_name||'')}" ${s?'readonly':''}/></div>
                 <div class="form-row"><label>Следующая</label><input id="ps-next" value="${escapeHtml(s?.next_position_name||'')}"/></div>
                 <div class="form-row"><label>Мин. дней</label><input id="ps-days" type="number" value="${s?.min_days||0}"/></div>
                 <div class="form-row"><label>Мин. обзвонов</label><input id="ps-calls" type="number" value="${s?.min_calls||0}"/></div>
@@ -1906,7 +2105,7 @@ function promoSetModal(s, onSave) {
             additional_conditions: $('#ps-cond').value.trim()||null
         };
         if (s) payload.id = s.id;
-        if (!payload.position_name) return toast('Должность обязательна','warning');
+        if (!payload.position_name) return toast('Ранг / должность обязательны','warning');
         try { await savePromotionSettings(payload); onSave(); closeModal(); toast('Сохранено','success'); }
         catch (e) { toast('Ошибка: '+e.message,'danger'); }
     };
@@ -1999,7 +2198,7 @@ async function renderPayments(view) {
             <div class="panel-header"><h3>Все начисления (${payments.length})</h3></div>
             <div class="table-wrap">
                 <table class="data" id="p-table"><thead><tr>
-                    <th>№</th><th>Дата</th><th>Админ</th><th>Должность</th><th>Тип</th>
+                    <th>№</th><th>Дата</th><th>Админ</th><th>Ранг / должность</th><th>Тип</th>
                     <th class="num">Кол-во</th><th class="num">Тариф</th><th class="num">×</th>
                     <th class="num">Сумма</th><th class="num">Вычет %</th><th class="num">Итог</th>
                     <th>Комментарий</th><th style="width:80px">Действия</th>
@@ -2008,7 +2207,7 @@ async function renderPayments(view) {
                     <td>${i+1}</td>
                     <td>${fmtDate(p.date)}</td>
                     <td>${escapeHtml(p.admin?.display_name||'—')}</td>
-                    <td>${escapeHtml(p.admin?.current_position||'—')}</td>
+                    <td>${escapeHtml(adminPositionLabel(p.admin||{}))}</td>
                     <td>${escapeHtml(activityLabel(p.activity_type))}</td>
                     <td class="num">${p.amount||0}</td>
                     <td class="num">${p.tariff||0}</td>
@@ -2018,7 +2217,7 @@ async function renderPayments(view) {
                     <td class="num"><b>${p.final_total||0}</b></td>
                     <td>${escapeHtml((p.comment||'').slice(0,30))}</td>
                     <td class="actions">${hasRole('owner','admin')?`<button class="btn btn-sm btn-danger" data-act="del">🗑</button>`:''}</td>
-                </tr>`).join('') || `<tr><td colspan="13" class="muted">Нет данных</td></tr>`}
+                </tr>`).join('') || `<tr><td colspan="14" class="muted">Нет данных</td></tr>`}
                 </tbody></table>
             </div>
         </div>
@@ -2138,11 +2337,11 @@ async function renderArchive(view) {
         <div class="panel">
             <div class="panel-header"><h3>Отключённые администраторы</h3></div>
             <div class="table-wrap"><table class="data"><thead><tr>
-                <th>Имя</th><th>Должность</th><th>Дата вступления</th><th>Комментарий</th>
+                <th>Имя</th><th>Ранг / должность</th><th>Дата вступления</th><th>Комментарий</th>
             </tr></thead><tbody>
             ${archAdmins.map(a => `<tr>
                 <td>${escapeHtml(a.display_name)}</td>
-                <td>${escapeHtml(a.current_position||'—')}</td>
+                <td>${escapeHtml(adminPositionLabel(a))}</td>
                 <td>${fmtDate(a.joined_at)}</td>
                 <td>${escapeHtml(a.comment||'')}</td>
             </tr>`).join('') || `<tr><td colspan="4" class="muted">Пусто</td></tr>`}
@@ -2185,16 +2384,28 @@ async function renderArchive(view) {
 // =====================================================================
 async function renderSettings(view) {
     const conn = SB.client ? '✅ подключен' : '❌ нет клиента';
+    const ap = loadAppearanceSettings();
     view.innerHTML = `
         <h2>Настройки</h2>
         <div class="panel-grid-2">
+            <div class="panel">
+                <div class="panel-header"><h3>Внешний вид LiveRP</h3></div>
+                <div class="form-grid">
+                    <div class="form-row"><label>Тема</label><select id="s-theme"><option value="dark" ${ap.theme==='dark'?'selected':''}>Тёмная LiveRP</option><option value="light" ${ap.theme==='light'?'selected':''}>Светлая</option></select></div>
+                    <div class="form-row"><label>Анимации</label><select id="s-anim"><option value="on" ${ap.animations==='on'?'selected':''}>Включены</option><option value="off" ${ap.animations==='off'?'selected':''}>Отключены</option></select></div>
+                    <div class="form-row"><label>Фоновый эффект</label><select id="s-bg"><option value="orbs" ${ap.bgEffect==='orbs'?'selected':''}>Пузыри</option><option value="grid" ${ap.bgEffect==='grid'?'selected':''}>Сеть</option><option value="waves" ${ap.bgEffect==='waves'?'selected':''}>Волны</option><option value="off" ${ap.bgEffect==='off'?'selected':''}>Без эффекта</option></select></div>
+                    <div class="form-row"><label>Плотность интерфейса</label><select id="s-density"><option value="comfortable" ${ap.density==='comfortable'?'selected':''}>Обычная</option><option value="compact" ${ap.density==='compact'?'selected':''}>Компактная</option></select></div>
+                </div>
+                <div class="card settings-preview-card" style="margin-top:12px"><div class="card-label">Предпросмотр</div><div class="card-value">LiveRP</div><div class="card-sub">Тема применяется сразу и сохраняется в браузере.</div></div>
+            </div>
+
             <div class="panel">
                 <div class="panel-header"><h3>Пороги оценок</h3></div>
                 <div class="form-grid">
                     <div class="form-row"><label>Проходной % (≥)</label><input id="s-pass" type="number" value="${PASS_PERCENT}" disabled/></div>
                     <div class="form-row"><label>Пересдача % (≥)</label><input id="s-retake" type="number" value="${RETAKE_PERCENT}" disabled/></div>
                 </div>
-                <p class="muted" style="margin-top:8px">Текущие пороги зашиты в script.js. Чтобы изменить навсегда — поправьте PASS_PERCENT/RETAKE_PERCENT.</p>
+                <p class="muted" style="margin-top:8px">Пороги пока глобальные в script.js.</p>
             </div>
 
             <div class="panel">
@@ -2205,17 +2416,21 @@ async function renderSettings(view) {
                     <button class="btn" id="s-clear-cache">🧹 Очистить локальный кэш</button>
                     <button class="btn" id="s-check-conn">🔌 Проверить подключение</button>
                 </div>
-                <p class="muted" style="margin-top:8px">Версия: <b>1.0.0</b>. Supabase: ${conn}</p>
+                <p class="muted" style="margin-top:8px">Версия: <b>2.0.0 LiveRP</b>. Supabase: ${conn}</p>
             </div>
         </div>
     `;
 
+    $('#s-theme').onchange = () => saveAppearanceSettings({ theme: $('#s-theme').value });
+    $('#s-anim').onchange = () => saveAppearanceSettings({ animations: $('#s-anim').value });
+    $('#s-bg').onchange = () => saveAppearanceSettings({ bgEffect: $('#s-bg').value });
+    $('#s-density').onchange = () => saveAppearanceSettings({ density: $('#s-density').value });
     $('#s-export-json').onclick = () => $('#btn-export-json').click();
     $('#s-import-json').onclick = () => $('#btn-import-json').click();
     $('#s-clear-cache').onclick = () => {
         State.cache = { admins:[],questions:[],candidates:[],calls:[],discipline:[],
             promotionSettings:[],promotions:[],payments:[],users:[] };
-        try { localStorage.clear(); } catch{}
+        try { localStorage.removeItem('supabase.auth.token'); } catch{}
         toast('Кэш очищен','success');
     };
     $('#s-check-conn').onclick = async () => {

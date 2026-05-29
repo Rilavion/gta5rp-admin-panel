@@ -3,20 +3,21 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GTA5RP | Admin Recruit Panel</title>
+    <title>LiveRP | Admin Control Panel</title>
     <link rel="stylesheet" href="style.css" />
 </head>
-<body>
+<body data-theme="dark" data-animations="on" data-bg-effect="orbs">
+<div class="ambient-bg" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
 
 <!-- =================== Экран входа =================== -->
 <div id="login-screen" class="login-screen">
     <div class="login-card">
         <div class="login-logo">
-            <span class="logo-mark">GTA5RP</span>
-            <span class="logo-sub">Admin Recruit Panel</span>
+            <span class="logo-mark">LiveRP</span>
+            <span class="logo-sub">Admin Control Panel</span>
         </div>
         <h2>Вход в систему</h2>
-        <p class="muted">Только для администрации сервера</p>
+        <p class="muted">Внутренняя панель администрации LiveRP</p>
         <form id="login-form">
             <label>Email
                 <input type="email" id="login-email" autocomplete="username" required />
@@ -27,6 +28,10 @@
             <button type="submit" class="btn btn-primary btn-block" id="login-btn">Войти</button>
             <div id="login-error" class="login-error"></div>
         </form>
+        <div class="login-footer">
+            <small class="muted">Если у вас нет аккаунта — обратитесь к owner-у.<br/>
+            Создание пользователей происходит в Supabase Dashboard или через Edge Function.</small>
+        </div>
     </div>
 </div>
 
@@ -34,8 +39,8 @@
 <div id="app" class="app hidden">
     <aside class="sidebar">
         <div class="sidebar-brand">
-            <div class="brand-mark">GTA5RP</div>
-            <div class="brand-sub">Admin Recruit Panel</div>
+            <div class="brand-mark">LiveRP</div>
+            <div class="brand-sub">Admin Control Panel</div>
         </div>
         <nav class="sidebar-nav" id="sidebar-nav">
             <a href="#dashboard"      data-route="dashboard"      class="nav-link">📊 Главная</a>
@@ -45,6 +50,7 @@
             <a href="#stats"          data-route="stats"          class="nav-link">📈 Статистика</a>
             <a href="#users"          data-route="users"          class="nav-link">👥 Пользователи</a>
             <a href="#admins"         data-route="admins"         class="nav-link">🛡 Состав администрации</a>
+            <a href="#leadership"     data-route="leadership"     class="nav-link">👑 Руководство</a>
             <a href="#discipline"     data-route="discipline"     class="nav-link">⚠ Наказания</a>
             <a href="#promotion"      data-route="promotion"      class="nav-link">⬆ Система повышения</a>
             <a href="#promotion-set"  data-route="promotion-set"  class="nav-link">⚙ Настройки повышения</a>
@@ -53,14 +59,14 @@
             <a href="#settings"       data-route="settings"       class="nav-link">🔧 Настройки</a>
         </nav>
         <div class="sidebar-foot">
-            <small class="muted">v1.0.0</small>
+            <small class="muted">v2.0.0 LiveRP</small>
         </div>
     </aside>
 
     <div class="main">
         <header class="topbar">
             <div class="topbar-title">
-                <h1>GTA5RP | Admin Recruit Panel</h1>
+                <h1>LiveRP | Admin Control Panel</h1>
                 <div class="topbar-meta" id="topbar-meta"></div>
             </div>
             <div class="topbar-actions">

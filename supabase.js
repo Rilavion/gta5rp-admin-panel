@@ -10,8 +10,8 @@
 //    Project Settings → API → Project URL + anon/public key
 // ---------------------------------------------------------------------
 window.SUPABASE_CONFIG = {
-    url: 'https://efezrmthbssdkwbgypmv.supabase.co',
-    anonKey: 'sb_publishable_535wL9XsOnsNrQrVMDUU4w_TqPmEhgA'
+    url: 'https://YOUR-PROJECT-REF.supabase.co',
+    anonKey: 'YOUR-ANON-PUBLIC-KEY'
 };
 
 // ---------------------------------------------------------------------
@@ -133,47 +133,6 @@ async function disableUser(userId, disabled = true) {
     return data;
 }
 
-async function adminCreateUser({ email, password, display_name, access_role = 'viewer', admin_id = null, is_active = true }) {
-    if (!hasRole('owner')) throw new Error('Только owner может создавать пользователей');
-
-    const { data, error } = await SB.client.functions.invoke('manage-user', {
-        body: {
-            action: 'create',
-            email,
-            password,
-            display_name,
-            access_role,
-            admin_id,
-            is_active
-        }
-    });
-
-    if (error) throw error;
-    await writeAuditLog('create', 'user', data?.profile?.id || data?.id || null, { email, display_name, access_role, admin_id, is_active });
-    return data?.profile || data;
-}
-
-async function adminUpdateUser({ id, email, password, display_name, access_role, admin_id = null, is_active = true }) {
-    if (!hasRole('owner')) throw new Error('Только owner может редактировать пользователей');
-
-    const { data, error } = await SB.client.functions.invoke('manage-user', {
-        body: {
-            action: 'update',
-            id,
-            email,
-            password: password || undefined,
-            display_name,
-            access_role,
-            admin_id,
-            is_active
-        }
-    });
-
-    if (error) throw error;
-    await writeAuditLog('update', 'user', id, { email, display_name, access_role, admin_id, is_active, password_changed: Boolean(password) });
-    return data?.profile || data;
-}
-
 // ---------------------------------------------------------------------
 // 6. Администраторы (состав)
 // ---------------------------------------------------------------------
@@ -281,6 +240,19 @@ async function createCandidate(cand) {
     return data;
 }
 
+
+async function updateCandidate(id, patch) {
+    const { data, error } = await SB.client
+        .from('candidates')
+        .update(patch)
+        .eq('id', id)
+        .select()
+        .single();
+    if (error) throw error;
+    await writeAuditLog('update', 'candidate', id, patch);
+    return data;
+}
+
 async function findOrCreateCandidate(cand) {
     // ищем по Discord или нику
     if (cand.discord) {
@@ -342,11 +314,45 @@ async function saveCallSession(session, answers) {
     return sessData;
 }
 
+
+async function updateCallSession(id, patch) {
+    const { data, error } = await SB.client
+        .from('call_sessions')
+        .update(patch)
+        .eq('id', id)
+        .select()
+        .single();
+    if (error) throw error;
+    await writeAuditLog('update', 'call_session', id, patch);
+    return data;
+}
+
+async function replaceCallAnswers(callSessionId, answers = []) {
+    const { error: delErr } = await SB.client
+        .from('call_answers')
+        .delete()
+        .eq('call_session_id', callSessionId);
+    if (delErr) throw delErr;
+
+    if (Array.isArray(answers) && answers.length) {
+        const rows = answers.map(a => ({
+            call_session_id: callSessionId,
+            question_id: a.question_id,
+            score: a.score,
+            comment: a.comment || null
+        }));
+        const { error: insErr } = await SB.client.from('call_answers').insert(rows);
+        if (insErr) throw insErr;
+    }
+    await writeAuditLog('replace', 'call_answers', callSessionId, { count: answers.length });
+    return true;
+}
+
 async function loadCallHistory(filters = {}) {
     let q = SB.client.from('call_sessions').select(`
         *,
         candidate:candidate_id (id, display_name, discord, game_nick),
-        trainer:trainer_admin_id (id, display_name)
+        trainer:trainer_admin_id (id, display_name, rank, custom_position, current_position)
     `).order('call_date', { ascending: false });
 
     if (filters.status) q = q.eq('status', filters.status);
@@ -394,7 +400,7 @@ async function deleteCallSession(id) {
 async function loadDisciplineRecords() {
     const { data, error } = await SB.client
         .from('discipline_records')
-        .select(`*, admin:admin_id (id, display_name, discord, current_position)`)
+        .select(`*, admin:admin_id (id, display_name, discord, rank, custom_position, current_position)`)
         .order('date', { ascending: false });
     if (error) throw error;
     return data || [];
@@ -536,7 +542,7 @@ async function calculatePromotionReadiness(admins, settings, calls, discipline) 
 // ---------------------------------------------------------------------
 async function loadPayments(filters = {}) {
     let q = SB.client.from('payments')
-        .select(`*, admin:admin_id (id, display_name, current_position)`)
+        .select(`*, admin:admin_id (id, display_name, rank, custom_position, current_position)`)
         .order('date', { ascending: false });
     if (filters.from) q = q.gte('date', filters.from);
     if (filters.to) q = q.lte('date', filters.to);
@@ -615,11 +621,11 @@ async function writeAuditLog(action, entityType, entityId, details) {
 // Экспортируем в window для удобства
 Object.assign(window, {
     initSupabase, login, logout, getCurrentUser, getCurrentProfile, requireAuth, hasRole,
-    loadUsers, saveUserProfile, disableUser, adminCreateUser, adminUpdateUser,
+    loadUsers, saveUserProfile, disableUser,
     loadAdmins, createAdmin, updateAdmin, archiveAdmin,
     loadQuestions, createQuestion, updateQuestion, disableQuestion, deleteQuestion,
-    loadCandidates, createCandidate, findOrCreateCandidate,
-    saveCallSession, loadCallHistory, loadCallAnswers, deleteCallSession,
+    loadCandidates, createCandidate, updateCandidate, findOrCreateCandidate,
+    saveCallSession, updateCallSession, replaceCallAnswers, loadCallHistory, loadCallAnswers, deleteCallSession,
     loadDisciplineRecords, createDisciplineRecord, updateDisciplineRecord,
     loadPromotionSettings, savePromotionSettings, loadPromotions,
     calculatePromotionReadiness, approvePromotion, rejectPromotion,

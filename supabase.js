@@ -483,6 +483,12 @@ async function updateDisciplineRecord(id, patch) {
     return data;
 }
 
+async function deleteDisciplineRecord(id) {
+    const { error } = await SB.client.from('discipline_records').delete().eq('id', id);
+    if (error) throw error;
+    await writeAuditLog('delete', 'discipline', id, {});
+}
+
 // ---------------------------------------------------------------------
 // 11. Настройки повышения и повышения
 // ---------------------------------------------------------------------
@@ -567,15 +573,21 @@ async function calculatePromotionReadiness(admins, settings, calls, discipline) 
         const activePuns = discipline.filter(d => d.admin_id === a.id && d.status === 'active').length;
         const activityOk = (a.activity_percent || 0) >= setting.required_activity_percent;
 
+        const reportsCount = Number(a.accepted_reports || 0);
+        const minReports = Number(setting.min_reports || 0);
+        const reportsOk = reportsCount >= minReports;
+
         const checks = {
             days: days >= setting.min_days,
             calls: callsCount >= setting.min_calls,
             trainings: trainingsCount >= setting.min_trainings,
+            reports: reportsOk,
             punishments: activePuns <= setting.max_active_punishments,
             activity: activityOk
         };
+        const totalChecks = Object.keys(checks).length;
         const okCount = Object.values(checks).filter(Boolean).length;
-        const percent = Math.round(okCount * 100 / 5);
+        const percent = Math.round(okCount * 100 / totalChecks);
 
         let status = 'not_ready';
         if (activePuns > setting.max_active_punishments) status = 'not_ready';
@@ -584,7 +596,7 @@ async function calculatePromotionReadiness(admins, settings, calls, discipline) 
 
         return {
             admin: a, setting, days, callsCount, trainingsCount,
-            activePuns, checks, percent, status,
+            reportsCount, activePuns, checks, percent, status,
             next_position: setting.next_position_name
         };
     });
@@ -680,7 +692,7 @@ Object.assign(window, {
     loadQuestions, createQuestion, updateQuestion, disableQuestion, deleteQuestion,
     loadCandidates, createCandidate, updateCandidate, findOrCreateCandidate,
     saveCallSession, updateCallSession, replaceCallAnswers, loadCallHistory, loadCallAnswers, deleteCallSession,
-    loadDisciplineRecords, createDisciplineRecord, updateDisciplineRecord,
+    loadDisciplineRecords, createDisciplineRecord, updateDisciplineRecord, deleteDisciplineRecord,
     loadPromotionSettings, savePromotionSettings, loadPromotions,
     calculatePromotionReadiness, approvePromotion, rejectPromotion,
     loadPayments, createPayment, deletePayment,

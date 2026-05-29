@@ -1146,6 +1146,45 @@ body[data-theme="light"] .ambient-bg span {
     background: radial-gradient(circle, rgba(var(--accent-rgb), .04), transparent 70%);
 }
 
+body[data-theme="light"] .modal-root {
+    background: rgba(0,0,0,.35);
+}
+body[data-theme="light"] .sidebar-brand {
+    background: linear-gradient(135deg, rgba(var(--accent-rgb), .05), transparent 80%);
+}
+body[data-theme="light"] .q-category-header {
+    background: var(--bg-2);
+}
+body[data-theme="light"] .q-item:hover {
+    background: rgba(var(--accent-rgb), .03);
+}
+body[data-theme="light"] .badge.neutral {
+    background: rgba(0,0,0,.05);
+    color: var(--text-dim);
+}
+body[data-theme="light"] .progress {
+    background: var(--bg-3);
+}
+body[data-theme="light"] .rank-pill {
+    background: rgba(var(--accent-rgb), .08);
+}
+body[data-theme="light"] .leader-avatar {
+    box-shadow: 0 4px 16px rgba(var(--accent-rgb), .15);
+}
+body[data-theme="light"] .mini-chip {
+    background: rgba(var(--accent-rgb), .06);
+}
+body[data-theme="light"] .mini-chip.on {
+    background: rgba(22, 163, 74, .08);
+}
+body[data-theme="light"] .mini-chip.off {
+    background: rgba(0,0,0,.04);
+}
+body[data-theme="light"] code {
+    background: rgba(0,0,0,.05);
+    color: var(--text);
+}
+
 /* =================== Responsive =================== */
 @media (max-width: 900px) {
     .app { grid-template-columns: 1fr; }

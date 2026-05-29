@@ -521,12 +521,7 @@ async function renderDashboard(view) {
     const interviewerRank = Object.values(interviewMap).sort((a,b)=>b.count-a.count).slice(0,5);
 
     view.innerHTML = `
-        <div class="liverp-hero">
-            <div>
-                <h2>Центр управления администрацией</h2>
-                <p class="muted">Сводка по обзвонам, составу, наказаниям, повышениям и выплатам</p>
-            </div>
-        </div>
+        <h2>Главная</h2>
         <div class="cards">
             <div class="card accent">  <div class="card-label">Всего обзвонов</div><div class="card-value">${total}</div></div>
             <div class="card success"> <div class="card-label">Прошло</div><div class="card-value">${passed}</div></div>
@@ -1250,12 +1245,9 @@ async function renderUsers(view) {
     const canManageUsers = hasRole('owner');
 
     view.innerHTML = `
-        <div class="liverp-hero">
-            <div>
-                <h2>Пользователи системы</h2>
-                <p class="muted">Аккаунты для входа в панель управления</p>
-            </div>
-            ${canManageUsers ? `<button class="btn btn-primary" id="btn-add-user">+ Создать пользователя</button>` : ''}
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+            <h2 style="margin:0">Пользователи</h2>
+            ${canManageUsers ? `<button class="btn btn-primary" id="btn-add-user">+ Создать</button>` : ''}
         </div>
         <div class="panel">
             <div class="toolbar">
@@ -1362,11 +1354,8 @@ async function renderDepartments(view) {
     const all = getDepartmentsFromAdmins(admins, departments);
 
     view.innerHTML = `
-        <div class="liverp-hero">
-            <div>
-                <h2>Отделы и разделы</h2>
-                <p class="muted">Структура администрации с распределением по отделам</p>
-            </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+            <h2 style="margin:0">Отделы и разделы</h2>
             ${canEdit ? `<button class="btn btn-primary" id="btn-add-dep">+ Создать отдел</button>` : ''}
         </div>
         <div id="dep-sections"></div>
@@ -1396,7 +1385,8 @@ async function renderDepartments(view) {
                         <span class="mini-chip ${dep.show_activity?'on':'off'}">активность</span>
                         <span class="mini-chip ${dep.show_punishments?'on':'off'}">наказания</span>
                     </div>
-                    ${canEdit && dep.id ? `<button class="btn btn-sm" data-act="edit">✎</button>` : ''}
+                    ${canEdit ? `<button class="btn btn-sm" data-act="edit">✎</button>` : ''}
+                    ${canEdit && dep.id ? `<button class="btn btn-sm btn-danger" data-act="delete">🗑</button>` : ''}
                 </div>
             </div>
             ${group.length ? `<div class="dep-members-wrap">
@@ -1427,11 +1417,20 @@ async function renderDepartments(view) {
 
     if (canEdit) {
         $('#btn-add-dep').onclick = () => departmentModal(null, () => handleRoute(true));
-        sectionsEl.addEventListener('click', (e) => {
-            const btn = e.target.closest('button[data-act="edit"]'); if (!btn) return;
+        sectionsEl.addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-act]'); if (!btn) return;
             const card = btn.closest('.department-panel');
             const dep = departments.find(d => d.id === card.dataset.id) || all.find(d => d.name === card.dataset.name);
-            departmentModal(dep, () => handleRoute(true));
+            if (btn.dataset.act === 'edit') {
+                departmentModal(dep, () => handleRoute(true));
+            } else if (btn.dataset.act === 'delete') {
+                if (!dep?.id) return toast('Этот отдел нельзя удалить — он не сохранён в базе','warning');
+                const members = admins.filter(a => a.is_active && (a.branch||'Общая администрация') === dep.name);
+                if (members.length > 0) return toast(\`В отделе ещё ${members.length} участник(ов). Переведите их в другой отдел.\`,'warning');
+                if (!await confirmDialog(\`Удалить отдел «${dep.name}»?\`)) return;
+                try { await deleteDepartment(dep.id); toast('Отдел удалён','success'); handleRoute(true); }
+                catch(er) { toast('Ошибка: '+er.message,'danger'); }
+            }
         });
     }
 }
@@ -1477,14 +1476,9 @@ async function renderAdmins(view) {
     const allDepartments = getDepartmentsFromAdmins(admins, departments);
 
     view.innerHTML = `
-        <div class="liverp-hero">
-            <div>
-                <h2>Состав администрации</h2>
-                <p class="muted">Ранги, должности, отделы, активность и статистика</p>
-            </div>
-            <div class="hero-actions">
-                ${canEdit ? `<button class="btn btn-primary" id="btn-add-admin">+ Добавить</button>` : ''}
-            </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+            <h2 style="margin:0">Состав администрации</h2>
+            ${canEdit ? `<button class="btn btn-primary" id="btn-add-admin">+ Добавить</button>` : ''}
         </div>
         <div class="panel">
             <div class="toolbar">
@@ -1571,8 +1565,9 @@ function adminModal(a, departments = [], onSave) {
                 <div class="form-row"><label>Ранг</label><select id="ad-rank"><option value="">—</option>${Array.from({length:11},(_,i)=>i+1).map(n=>`<option value="${n}" ${Number(a?.rank)===n?'selected':''}>Ранг ${n}</option>`).join('')}</select></div>
                 <div class="form-row"><label>Кастомная должность</label><input id="ad-custom-pos" value="${escapeHtml(a?.custom_position||'')}"/></div>
                 <div class="form-row"><label>Отдел</label>
-                    <input id="ad-branch" list="dep-list" value="${escapeHtml(a?.branch||'Общая администрация')}"/>
-                    <datalist id="dep-list">${depOptions.map(d=>`<option>${escapeHtml(d.name)}</option>`).join('')}</datalist></div>
+                    <select id="ad-branch">
+                        ${depOptions.map(d=>`<option value="${escapeHtml(d.name)}" ${(a?.branch||'Общая администрация')===d.name?'selected':''}>${escapeHtml(d.name)}</option>`).join('')}
+                    </select></div>
                 <div class="form-row"><label>Принятые рапорты</label><input id="ad-reports" type="number" min="0" value="${Number(a?.accepted_reports||0)}"/></div>
                 <div class="form-row"><label>Руководство</label><select id="ad-lead"><option value="false" ${!a?.is_leadership?'selected':''}>Нет</option><option value="true" ${a?.is_leadership?'selected':''}>Да</option></select></div>
                 <div class="form-row"><label>Дата вступления</label><input id="ad-joined" type="date" value="${a?.joined_at||''}"/></div>
@@ -1583,6 +1578,7 @@ function adminModal(a, departments = [], onSave) {
         `,
         footer: `<button class="btn" data-cancel>Отмена</button><button class="btn btn-primary" data-save>Сохранить</button>`
     });
+
     $('[data-cancel]').onclick = closeModal;
     $('[data-save]').onclick = async () => {
         const name = $('#ad-name').value.trim();
@@ -1591,7 +1587,7 @@ function adminModal(a, departments = [], onSave) {
             display_name: name, discord: $('#ad-discord').value.trim()||null, game_nick: $('#ad-game').value.trim()||null,
             rank: parseInt($('#ad-rank').value) || null, custom_position: $('#ad-custom-pos').value.trim() || null,
             current_position: $('#ad-custom-pos').value.trim() || ($('#ad-rank').value ? `Ранг ${$('#ad-rank').value}` : null),
-            branch: $('#ad-branch').value.trim()||'Общая администрация',
+            branch: $('#ad-branch').value||'Общая администрация',
             accepted_reports: parseInt($('#ad-reports').value) || 0, is_leadership: $('#ad-lead').value === 'true',
             joined_at: $('#ad-joined').value||null, last_promotion_at: $('#ad-prom').value||null,
             activity_percent: parseFloat($('#ad-act').value)||0, comment: $('#ad-com').value.trim()||null
@@ -1642,12 +1638,7 @@ async function renderLeadership(view) {
         .sort((a,b) => (Number(b.rank)||0) - (Number(a.rank)||0));
 
     view.innerHTML = `
-        <div class="liverp-hero">
-            <div>
-                <h2>👑 Руководство</h2>
-                <p class="muted">Руководящий состав администрации сервера</p>
-            </div>
-        </div>
+        <h2>👑 Руководство</h2>
         <div class="cards">
             <div class="card accent"><div class="card-label">Руководителей</div><div class="card-value">${leaders.length}</div></div>
             <div class="card success"><div class="card-label">Активных</div><div class="card-value">${leaders.filter(a=>a.is_active).length}</div></div>
@@ -1731,7 +1722,7 @@ async function renderDiscipline(view) {
                 <td>${fmtDate(r.expires_at)}</td>
                 <td>${statusBadge(r.status)}</td>
                 <td class="actions">
-                    ${canEdit?`<button class="btn btn-sm" data-act="edit">✎</button><button class="btn btn-sm" data-act="close">✓</button>`:''}
+                    ${canEdit?`<button class="btn btn-sm" data-act="edit">✎</button><button class="btn btn-sm" data-act="close">✓ Снять</button>${hasRole('owner')?'<button class="btn btn-sm btn-danger" data-act="del">🗑</button>':''}`:''}
                 </td>
             </tr>
         `).join('') || `<tr><td colspan="8" class="muted">Нет данных</td></tr>`;
@@ -1767,6 +1758,10 @@ async function renderDiscipline(view) {
                 if (newReason !== null) {
                     try { const upd = await updateDisciplineRecord(id, { reason: newReason }); Object.assign(r, upd); render(); } catch(er){ toast(er.message,'danger'); }
                 }
+            } else if (btn.dataset.act === 'del') {
+                if (!await confirmDialog('Удалить наказание навсегда?')) return;
+                try { await deleteDisciplineRecord(id); records.splice(records.indexOf(r), 1); render(); toast('Удалено','success'); }
+                catch(er){ toast('Ошибка: '+er.message,'danger'); }
             }
         });
     }
@@ -1786,8 +1781,8 @@ async function renderPromotion(view) {
     const allDepartments = getDepartmentsFromAdmins(admins, departments).filter(dep => admins.some(a => (a.branch||'Общая администрация') === dep.name));
 
     view.innerHTML = `
-        <div class="liverp-hero">
-            <div><h2>Система повышений</h2><p class="muted">Готовность администраторов по отделам</p></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+            <h2 style="margin:0">Система повышений</h2>
             <button class="btn btn-sm" id="btn-recalc">⟳ Обновить</button>
         </div>
         <div class="panel">
@@ -1816,7 +1811,7 @@ async function renderPromotion(view) {
             return `<div class="panel">
                 <div class="panel-header"><h3>${escapeHtml(dep.name)} <span class="badge accent">${group.length}</span></h3></div>
                 <div class="table-wrap"><table class="data"><thead><tr>
-                    <th>Админ</th><th>Ранг</th><th>Следующий</th><th class="num">Дней</th>
+                    <th>Админ</th><th>Ранг</th><th>Следующий</th><th class="num">Дней</th><th class="num">Рапорты</th>
                     <th>Готовность</th><th>Статус</th><th style="width:240px">Действия</th>
                 </tr></thead><tbody>
                 ${group.map(r => {
@@ -1918,8 +1913,8 @@ async function renderPromotionSettings(view) {
             <div class="table-wrap">
                 <table class="data"><thead><tr>
                     <th>Должность</th><th>Следующая</th><th class="num">Дней</th><th class="num">Обзвоны</th>
-                    <th class="num">Обучения</th><th class="num">Макс. нак.</th><th class="num">Актив. %</th>
-                    <th>Доп. условия</th><th style="width:80px">Действия</th>
+                    <th class="num">Обучения</th><th class="num">Рапорты</th><th class="num">Макс. нак.</th><th class="num">Актив. %</th>
+                    <th>Доп. условия</th><th style="width:80px"></th>
                 </tr></thead><tbody>
                 ${settings.map(s => `<tr data-id="${s.id}">
                     <td>${escapeHtml(s.position_name)}</td><td>${escapeHtml(s.next_position_name||'—')}</td>
@@ -1927,7 +1922,7 @@ async function renderPromotionSettings(view) {
                     <td class="num">${s.max_active_punishments}</td><td class="num">${s.required_activity_percent}%</td>
                     <td>${escapeHtml(s.additional_conditions||'—')}</td>
                     <td class="actions"><button class="btn btn-sm" data-act="edit">✎</button></td>
-                </tr>`).join('') || `<tr><td colspan="9" class="muted">Нет настроек</td></tr>`}
+                </tr>`).join('') || `<tr><td colspan="10" class="muted">Нет настроек</td></tr>`}
                 </tbody></table>
             </div>
         </div>
@@ -1935,7 +1930,7 @@ async function renderPromotionSettings(view) {
 
     if (hasRole('owner')) { $('#btn-add-set').onclick = () => promoSetModal(null, () => handleRoute(true)); }
     view.querySelector('tbody').addEventListener('click', (e) => {
-        const btn = e.target.closest('button[data-act="edit"]'); if (!btn) return;
+            const btn = e.target.closest('button[data-act]'); if (!btn) return;
         const s = settings.find(x => x.id === btn.closest('tr').dataset.id);
         promoSetModal(s, () => handleRoute(true));
     });
@@ -1952,6 +1947,7 @@ function promoSetModal(s, onSave) {
                 <div class="form-row"><label>Мин. дней</label><input id="ps-days" type="number" value="${s?.min_days||0}"/></div>
                 <div class="form-row"><label>Мин. обзвонов</label><input id="ps-calls" type="number" value="${s?.min_calls||0}"/></div>
                 <div class="form-row"><label>Мин. обучений</label><input id="ps-trn" type="number" value="${s?.min_trainings||0}"/></div>
+                <div class="form-row"><label>Мин. рапортов</label><input id="ps-rep" type="number" value="${s?.min_reports||0}"/></div>
                 <div class="form-row"><label>Макс. нак.</label><input id="ps-mp" type="number" value="${s?.max_active_punishments||0}"/></div>
                 <div class="form-row"><label>Мин. актив. %</label><input id="ps-act" type="number" value="${s?.required_activity_percent||0}"/></div>
                 <div class="form-row" style="grid-column:1/-1"><label>Доп. условия</label><textarea id="ps-cond" rows="2">${escapeHtml(s?.additional_conditions||'')}</textarea></div>
@@ -1960,7 +1956,7 @@ function promoSetModal(s, onSave) {
     });
     $('[data-cancel]').onclick = closeModal;
     $('[data-save]').onclick = async () => {
-        const payload = { position_name: $('#ps-pos').value.trim(), next_position_name: $('#ps-next').value.trim()||null, min_days: parseInt($('#ps-days').value)||0, min_calls: parseInt($('#ps-calls').value)||0, min_trainings: parseInt($('#ps-trn').value)||0, max_active_punishments: parseInt($('#ps-mp').value)||0, required_activity_percent: parseFloat($('#ps-act').value)||0, additional_conditions: $('#ps-cond').value.trim()||null };
+        const payload = { position_name: $('#ps-pos').value.trim(), next_position_name: $('#ps-next').value.trim()||null, min_days: parseInt($('#ps-days').value)||0, min_calls: parseInt($('#ps-calls').value)||0, min_trainings: parseInt($('#ps-trn').value)||0, min_reports: parseInt($('#ps-rep').value)||0, max_active_punishments: parseInt($('#ps-mp').value)||0, required_activity_percent: parseFloat($('#ps-act').value)||0, additional_conditions: $('#ps-cond').value.trim()||null };
         if (s) payload.id = s.id;
         if (!payload.position_name) return toast('Должность обязательна','warning');
         try { await savePromotionSettings(payload); onSave(); closeModal(); toast('Сохранено','success'); }

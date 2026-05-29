@@ -1433,10 +1433,10 @@ async function renderDepartments(view) {
             if (btn.dataset.act === 'edit') {
                 departmentModal(dep, () => handleRoute(true));
             } else if (btn.dataset.act === 'delete') {
-                if (!dep?.id) return toast('Этот отдел нельзя удалить — он не сохранён в базе','warning');
+                if (!dep?.id) return toast('Этот отдел нельзя удалить','warning');
                 const members = admins.filter(a => a.is_active && (a.branch||'Общая администрация') === dep.name);
-                if (members.length > 0) return toast(\`В отделе ещё ${members.length} участник(ов). Переведите их в другой отдел.\`,'warning');
-                if (!await confirmDialog(\`Удалить отдел «${dep.name}»?\`)) return;
+                if (members.length > 0) return toast('В отделе есть ' + members.length + ' участник(ов). Переведите их.','warning');
+                if (!await confirmDialog('Удалить отдел ' + dep.name + '?')) return;
                 try { await deleteDepartment(dep.id); toast('Отдел удалён','success'); handleRoute(true); }
                 catch(er) { toast('Ошибка: '+er.message,'danger'); }
             }

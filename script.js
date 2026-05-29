@@ -382,21 +382,7 @@ function bindGlobal() {
 
     $('#btn-refresh').addEventListener('click', () => { handleRoute(true); toast('Данные обновлены','success'); });
 
-    $('#btn-export-json').addEventListener('click', async () => {
-        if (!hasRole('owner','admin')) return toast('Недостаточно прав','danger');
-        toast('Готовим экспорт...');
-        try {
-            const dump = await exportData();
-            const name = `liverp-admin-dump-${new Date().toISOString().slice(0,10)}.json`;
-            downloadFile(name, JSON.stringify(dump, null, 2), 'application/json');
-            toast('JSON экспортирован','success');
-        } catch (e) { toast('Ошибка экспорта: '+e.message,'danger'); }
-    });
-
-    $('#btn-import-json').addEventListener('click', () => {
-        if (!hasRole('owner')) return toast('Только owner может импортировать','danger');
-        $('#file-import').click();
-    });
+    // Export/import доступны через раздел Настройки
     $('#file-import').addEventListener('change', async (e) => {
         const file = e.target.files?.[0]; if (!file) return;
         try {
@@ -408,10 +394,6 @@ function bindGlobal() {
             handleRoute(true);
         } catch (err) { toast('Ошибка импорта: '+err.message,'danger'); }
         e.target.value = '';
-    });
-
-    $('#btn-export-csv').addEventListener('click', () => {
-        exportRowsCsv(State.currentCsvRows || [], State.currentCsvName);
     });
 
     $('#sidebar-nav').addEventListener('click', (e) => {
@@ -2145,8 +2127,20 @@ async function renderSettings(view) {
     $('#s-anim').onchange = () => saveAppearanceSettings({ animations: $('#s-anim').value });
     $('#s-bg').onchange = () => saveAppearanceSettings({ bgEffect: $('#s-bg').value });
     $('#s-density').onchange = () => saveAppearanceSettings({ density: $('#s-density').value });
-    $('#s-export-json').onclick = () => $('#btn-export-json').click();
-    $('#s-import-json').onclick = () => $('#btn-import-json').click();
+    $('#s-export-json').onclick = async () => {
+        if (!hasRole('owner','admin')) return toast('Недостаточно прав','danger');
+        toast('Готовим экспорт...');
+        try {
+            const dump = await exportData();
+            const name = `liverp-admin-dump-${new Date().toISOString().slice(0,10)}.json`;
+            downloadFile(name, JSON.stringify(dump, null, 2), 'application/json');
+            toast('JSON экспортирован','success');
+        } catch (e) { toast('Ошибка экспорта: '+e.message,'danger'); }
+    };
+    $('#s-import-json').onclick = () => {
+        if (!hasRole('owner')) return toast('Только owner может импортировать','danger');
+        $('#file-import').click();
+    };
     $('#s-clear-cache').onclick = () => {
         State.cache = { admins:[],questions:[],candidates:[],calls:[],discipline:[],promotionSettings:[],promotions:[],payments:[],users:[],departments:[] };
         toast('Кэш очищен','success');

@@ -10,8 +10,8 @@
 //    Project Settings → API → Project URL + anon/public key
 // ---------------------------------------------------------------------
 window.SUPABASE_CONFIG = {
-    url: 'https://YOUR-PROJECT-REF.supabase.co',
-    anonKey: 'YOUR-ANON-PUBLIC-KEY'
+url: 'https://efezrmthbssdkwbgypmv.supabase.co',
+    anonKey: 'sb_publishable_535wL9XsOnsNrQrVMDUU4w_TqPmEhgA'
 };
 
 // ---------------------------------------------------------------------

@@ -146,20 +146,32 @@ async function disableUser(userId, disabled = true) {
 
 async function adminCreateUser({ email, password, display_name, access_role = 'viewer', admin_id = null, is_active = true }) {
     if (!hasRole('owner')) throw new Error('Только owner может создавать пользователей');
-    const { data, error } = await SB.client.functions.invoke('manage-user', {
+    const resp = await SB.client.functions.invoke('manage-user', {
         body: { action: 'create', email, password, display_name, access_role, admin_id, is_active }
     });
-    if (error) throw error;
+    console.log('[manage-user] response:', resp);
+    if (resp.error) {
+        const msg = typeof resp.error === 'object' ? (resp.error.message || JSON.stringify(resp.error)) : String(resp.error);
+        throw new Error('Edge Function: ' + msg);
+    }
+    const data = resp.data;
+    if (data?.error) throw new Error('Edge Function: ' + (data.error.message || data.error));
     await writeAuditLog('create', 'user', data?.profile?.id || data?.id || null, { email, display_name, access_role, admin_id, is_active });
     return data?.profile || data;
 }
 
 async function adminUpdateUser({ id, email, password, display_name, access_role, admin_id = null, is_active = true }) {
     if (!hasRole('owner')) throw new Error('Только owner может редактировать пользователей');
-    const { data, error } = await SB.client.functions.invoke('manage-user', {
+    const resp = await SB.client.functions.invoke('manage-user', {
         body: { action: 'update', id, email, password: password || undefined, display_name, access_role, admin_id, is_active }
     });
-    if (error) throw error;
+    console.log('[manage-user] response:', resp);
+    if (resp.error) {
+        const msg = typeof resp.error === 'object' ? (resp.error.message || JSON.stringify(resp.error)) : String(resp.error);
+        throw new Error('Edge Function: ' + msg);
+    }
+    const data = resp.data;
+    if (data?.error) throw new Error('Edge Function: ' + (data.error.message || data.error));
     await writeAuditLog('update', 'user', id, { email, display_name, access_role, admin_id, is_active, password_changed: Boolean(password) });
     return data?.profile || data;
 }
@@ -232,6 +244,12 @@ async function updateAdmin(id, patch) {
 
 async function archiveAdmin(id) {
     return updateAdmin(id, { is_active: false });
+}
+
+async function deleteAdmin(id) {
+    const { error } = await SB.client.from('admins').delete().eq('id', id);
+    if (error) throw error;
+    await writeAuditLog('delete', 'admin', id, {});
 }
 
 // ---------------------------------------------------------------------
@@ -698,7 +716,7 @@ Object.assign(window, {
     initSupabase, login, logout, getCurrentUser, getCurrentProfile, requireAuth, hasRole,
     loadUsers, saveUserProfile, disableUser, adminCreateUser, adminUpdateUser,
     loadDepartments, saveDepartment, deleteDepartment,
-    loadAdmins, createAdmin, updateAdmin, archiveAdmin,
+    loadAdmins, createAdmin, updateAdmin, archiveAdmin, deleteAdmin,
     loadQuestions, createQuestion, updateQuestion, disableQuestion, deleteQuestion,
     loadCandidates, createCandidate, updateCandidate, findOrCreateCandidate,
     saveCallSession, updateCallSession, replaceCallAnswers, loadCallHistory, loadCallAnswers, deleteCallSession,

@@ -1416,7 +1416,7 @@ async function renderDepartments(view) {
                         ${dep.show_calls ? `<td class="num">${adminCallsCount(a, calls)}</td>` : ''}
                         ${dep.show_reports ? `<td class="num">${adminReportsCount(a)}</td>` : ''}
                         ${dep.show_punishments ? `<td class="num">${adminActivePunishments(a, discipline)}</td>` : ''}
-                        <td>${a.is_active ? '<span class="badge success">Активен</span>' : '<span class="badge neutral">Архив</span>'}</td>
+                        <td>${a.is_active ? '<span class="badge success">Активен</span>' : '<span class="badge warning">Заморожен</span>'}</td>
                     </tr>`).join('')}
                     </tbody></table>
                 </div>
@@ -1526,11 +1526,12 @@ async function renderAdmins(view) {
                         <td>${a.rank ? `<span class="rank-pill">R${a.rank}</span>` : '—'}</td>
                         <td>${escapeHtml(a.custom_position || a.current_position || '—')}</td>
                         ${metricsCells(a, dep, calls, discipline)}
-                        <td>${a.is_active ? '<span class="badge success">Активен</span>' : '<span class="badge neutral">Архив</span>'}</td>
+                        <td>${a.is_active ? '<span class="badge success">Активен</span>' : '<span class="badge warning">Заморожен</span>'}</td>
                         <td class="actions">
                             <button class="btn btn-sm" data-act="view">👁</button>
                             ${canEdit?`<button class="btn btn-sm" data-act="edit">✎</button>`:''}
-                            ${canEdit?`<button class="btn btn-sm btn-danger" data-act="arch">📦</button>`:''}
+                            ${canEdit?`<button class="btn btn-sm btn-warning" data-act="freeze">${a.is_active?'❄️':'▶'}</button>`:''}
+                            ${hasRole('owner')?`<button class="btn btn-sm btn-danger" data-act="del">🗑</button>`:''}
                         </td>
                     </tr>`).join('')}
                     </tbody></table>
@@ -1551,10 +1552,22 @@ async function renderAdmins(view) {
         const id = btn.closest('tr').dataset.id;
         const a = admins.find(x => x.id === id); if (!a) return;
         if (btn.dataset.act === 'edit') { adminModal(a, allDepartments, (upd) => { Object.assign(a, upd); render(); }); }
-        else if (btn.dataset.act === 'arch') {
-            if (!await confirmDialog('Архивировать администратора?')) return;
-            try { const upd = await archiveAdmin(id); Object.assign(a, upd); render(); toast('Архивирован','success'); }
-            catch(er){ toast('Ошибка: '+er.message,'danger'); }
+        else if (btn.dataset.act === 'freeze') {
+            const action = a.is_active ? 'Заморозить' : 'Разморозить';
+            if (!await confirmDialog(action + ' администратора ' + a.display_name + '?')) return;
+            try {
+                const upd = await updateAdmin(id, { is_active: !a.is_active });
+                Object.assign(a, upd); render();
+                toast(a.is_active ? 'Разморожен' : 'Заморожен', 'success');
+            } catch(er) { toast('Ошибка: '+er.message,'danger'); }
+        } else if (btn.dataset.act === 'del') {
+            if (!await confirmDialog('Удалить администратора ' + a.display_name + ' навсегда? Это удалит все связанные наказания, выплаты и повышения.')) return;
+            try {
+                await deleteAdmin(id);
+                admins.splice(admins.indexOf(a), 1);
+                render();
+                toast('Удалён', 'success');
+            } catch(er) { toast('Ошибка: '+er.message,'danger'); }
         } else if (btn.dataset.act === 'view') { showAdminCard(a, calls, discipline); }
     });
     render();

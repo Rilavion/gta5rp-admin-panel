@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LiveRP | Admin Control Panel</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css" />
 </head>
 <body data-theme="dark" data-animations="on" data-bg-effect="orbs">
@@ -17,7 +20,7 @@
             <span class="logo-sub">Admin Control Panel</span>
         </div>
         <h2>Вход в систему</h2>
-        <p class="muted">Внутренняя панель администрации LiveRP</p>
+        <p class="muted">Панель управления администрацией сервера</p>
         <form id="login-form">
             <label>Email
                 <input type="email" id="login-email" autocomplete="username" required />
@@ -29,8 +32,7 @@
             <div id="login-error" class="login-error"></div>
         </form>
         <div class="login-footer">
-            <small class="muted">Если у вас нет аккаунта — обратитесь к owner-у.<br/>
-            Создание пользователей происходит в Supabase Dashboard или через Edge Function.</small>
+            <small class="muted">Для получения доступа обратитесь к руководству сервера.</small>
         </div>
     </div>
 </div>
@@ -52,15 +54,15 @@
             <a href="#admins"         data-route="admins"         class="nav-link">🛡 Состав администрации</a>
             <a href="#departments"    data-route="departments"    class="nav-link">🏛 Отделы / разделы</a>
             <a href="#leadership"     data-route="leadership"     class="nav-link">👑 Руководство</a>
-            <a href="#discipline"     data-route="discipline"     class="nav-link">⚠ Наказания</a>
-            <a href="#promotion"      data-route="promotion"      class="nav-link">⬆ Система повышения</a>
-            <a href="#promotion-set"  data-route="promotion-set"  class="nav-link">⚙ Настройки повышения</a>
-            <a href="#payments"       data-route="payments"       class="nav-link">💸 Выплаты / донат</a>
+            <a href="#discipline"     data-route="discipline"     class="nav-link">⚠️ Наказания</a>
+            <a href="#promotion"      data-route="promotion"      class="nav-link">⬆️ Система повышения</a>
+            <a href="#promotion-set"  data-route="promotion-set"  class="nav-link">⚙️ Настройки повышения</a>
+            <a href="#payments"       data-route="payments"       class="nav-link">💰 Выплаты / донат</a>
             <a href="#archive"        data-route="archive"        class="nav-link">📦 Архив</a>
             <a href="#settings"       data-route="settings"       class="nav-link">🔧 Настройки</a>
         </nav>
         <div class="sidebar-foot">
-            <small class="muted">v2.0.0 LiveRP</small>
+            <small class="muted">v4.0.0 LiveRP</small>
         </div>
     </aside>
 
@@ -72,11 +74,11 @@
             </div>
             <div class="topbar-actions">
                 <div class="topbar-clock" id="topbar-clock">--:--</div>
-                <button class="btn btn-ghost"   id="btn-refresh"   title="Обновить данные">⟳ Обновить</button>
-                <button class="btn btn-ghost"   id="btn-export-json" title="Экспорт всех данных в JSON">⤓ JSON</button>
-                <button class="btn btn-ghost"   id="btn-import-json" title="Импорт данных из JSON">⤒ JSON</button>
-                <button class="btn btn-ghost"   id="btn-export-csv"  title="Экспорт текущей таблицы в CSV">⤓ CSV</button>
-                <button class="btn btn-danger"  id="btn-logout"     title="Выйти">⎋ Выйти</button>
+                <button class="btn btn-ghost btn-sm" id="btn-refresh" title="Обновить данные">⟳</button>
+                <button class="btn btn-ghost btn-sm" id="btn-export-json" title="Экспорт JSON">⤓ JSON</button>
+                <button class="btn btn-ghost btn-sm" id="btn-import-json" title="Импорт JSON">⤒ JSON</button>
+                <button class="btn btn-ghost btn-sm" id="btn-export-csv" title="Экспорт CSV">⤓ CSV</button>
+                <button class="btn btn-danger btn-sm" id="btn-logout" title="Выйти">Выйти</button>
             </div>
         </header>
 
@@ -90,7 +92,7 @@
 <!-- =================== Toasts =================== -->
 <div id="toast-root" class="toast-root"></div>
 
-<!-- =================== Hidden file input для импорта =================== -->
+<!-- =================== Hidden file input =================== -->
 <input type="file" id="file-import" accept="application/json" style="display:none" />
 
 <!-- =================== Зависимости =================== -->

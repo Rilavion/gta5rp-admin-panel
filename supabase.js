@@ -10,8 +10,8 @@
 //    Project Settings → API → Project URL + anon/public key
 // ---------------------------------------------------------------------
 window.SUPABASE_CONFIG = {
-    url: 'https://efezrmthbssdkwbgypmv.supabase.co',
-    anonKey: 'sb_publishable_535wL9XsOnsNrQrVMDUU4w_TqPmEhgA'
+    url: 'https://YOUR-PROJECT-REF.supabase.co',
+    anonKey: 'YOUR-ANON-PUBLIC-KEY'
 };
 
 // ---------------------------------------------------------------------
@@ -131,6 +131,47 @@ async function disableUser(userId, disabled = true) {
         .single();
     if (error) throw error;
     return data;
+}
+
+async function adminCreateUser({ email, password, display_name, access_role = 'viewer', admin_id = null, is_active = true }) {
+    if (!hasRole('owner')) throw new Error('Только owner может создавать пользователей');
+
+    const { data, error } = await SB.client.functions.invoke('manage-user', {
+        body: {
+            action: 'create',
+            email,
+            password,
+            display_name,
+            access_role,
+            admin_id,
+            is_active
+        }
+    });
+
+    if (error) throw error;
+    await writeAuditLog('create', 'user', data?.profile?.id || data?.id || null, { email, display_name, access_role, admin_id, is_active });
+    return data?.profile || data;
+}
+
+async function adminUpdateUser({ id, email, password, display_name, access_role, admin_id = null, is_active = true }) {
+    if (!hasRole('owner')) throw new Error('Только owner может редактировать пользователей');
+
+    const { data, error } = await SB.client.functions.invoke('manage-user', {
+        body: {
+            action: 'update',
+            id,
+            email,
+            password: password || undefined,
+            display_name,
+            access_role,
+            admin_id,
+            is_active
+        }
+    });
+
+    if (error) throw error;
+    await writeAuditLog('update', 'user', id, { email, display_name, access_role, admin_id, is_active, password_changed: Boolean(password) });
+    return data?.profile || data;
 }
 
 // ---------------------------------------------------------------------
@@ -574,7 +615,7 @@ async function writeAuditLog(action, entityType, entityId, details) {
 // Экспортируем в window для удобства
 Object.assign(window, {
     initSupabase, login, logout, getCurrentUser, getCurrentProfile, requireAuth, hasRole,
-    loadUsers, saveUserProfile, disableUser,
+    loadUsers, saveUserProfile, disableUser, adminCreateUser, adminUpdateUser,
     loadAdmins, createAdmin, updateAdmin, archiveAdmin,
     loadQuestions, createQuestion, updateQuestion, disableQuestion, deleteQuestion,
     loadCandidates, createCandidate, findOrCreateCandidate,

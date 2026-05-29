@@ -47,6 +47,7 @@ body {
     -webkit-font-smoothing: antialiased;
     overflow: hidden;
 }
+
 .hidden { display: none !important; }
 .muted { color: var(--text-muted); }
 .dim   { color: var(--text-dim); }
@@ -107,6 +108,8 @@ body {
     display: grid;
     grid-template-columns: 240px 1fr;
     height: 100vh;
+    min-height: 0;
+    overflow: hidden;
 }
 .sidebar {
     background: var(--bg-1);
@@ -142,11 +145,19 @@ body {
 }
 .sidebar-foot { padding: 10px 16px; border-top: 1px solid var(--line); }
 
-.main { display: flex; flex-direction: column; min-width: 0; }
+.main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    height: 100vh;
+    overflow: hidden;
+}
 .topbar {
     background: var(--bg-1);
     border-bottom: 1px solid var(--line);
     padding: 10px 18px;
+    flex: 0 0 auto;
     display: flex; align-items: center; justify-content: space-between;
     gap: 16px;
 }
@@ -164,7 +175,12 @@ body {
 }
 
 .view {
-    flex: 1; overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
     padding: 22px;
     background:
         radial-gradient(circle at 0% 0%, rgba(75,139,255,0.04), transparent 50%),

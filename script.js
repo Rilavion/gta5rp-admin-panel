@@ -605,7 +605,7 @@ async function renderCalls(view) {
 
             <div class="live-score">
                 <div class="ls-item"><div class="ls-label">Баллов</div><div class="ls-val" id="ls-pts">0</div></div>
-                <div class="ls-item"><div class="ls-label">Максимум</div><div class="ls-val" id="ls-max">${questions.length}</div></div>
+                <div class="ls-item"><div class="ls-label">Отвечено / всего</div><div class="ls-val" id="ls-max">0 / ${questions.length}</div></div>
                 <div class="ls-item"><div class="ls-label">Процент</div><div class="ls-val" id="ls-pct">0%</div></div>
                 <div class="ls-item"><div class="ls-label">Статус</div><div class="ls-val" id="ls-status">${statusBadge('failed')}</div></div>
                 <div class="ls-actions">
@@ -658,35 +658,60 @@ async function renderCalls(view) {
     recalcLive();
 }
 
-function recalcLive() {
-    let pts = 0, max = 0;
+function getSelectedQuestionAnswers() {
+    const answers = [];
+    let pts = 0;
+
     document.querySelectorAll('.q-item').forEach(item => {
-        max += 1;
         const sel = item.querySelector('.q-opt.sel-1, .q-opt.sel-h, .q-opt.sel-0');
-        if (sel) pts += parseFloat(sel.dataset.score);
+        if (!sel) return; // не отвеченный вопрос не участвует в оценке
+
+        const score = parseFloat(sel.dataset.score);
+        pts += score;
+
+        const cm = item.querySelector('[data-q-comment]')?.value.trim() || '';
+        answers.push({
+            question_id: item.dataset.qid,
+            score,
+            comment: cm || null
+        });
     });
-    const pct = max ? Math.round(pts/max*100) : 0;
+
+    const answered = answers.length;
+    const total = document.querySelectorAll('.q-item').length;
+    const pct = answered ? Math.round(pts / answered * 100) : 0;
+
+    return { answers, pts, answered, total, pct };
+}
+
+function recalcLive() {
+    const { pts, answered, total, pct } = getSelectedQuestionAnswers();
     const status = calcStatus(pct);
-    const ptsEl = document.getElementById('ls-pts'); if (ptsEl) ptsEl.textContent = pts;
-    const maxEl = document.getElementById('ls-max'); if (maxEl) maxEl.textContent = max;
-    const pctEl = document.getElementById('ls-pct'); if (pctEl) pctEl.textContent = pct + '%';
-    const stEl  = document.getElementById('ls-status'); if (stEl) stEl.innerHTML = statusBadge(status);
+
+    const ptsEl = document.getElementById('ls-pts');
+    if (ptsEl) ptsEl.textContent = Number.isInteger(pts) ? String(pts) : pts.toFixed(1);
+
+    const maxEl = document.getElementById('ls-max');
+    if (maxEl) maxEl.textContent = `${answered} / ${total}`;
+
+    const pctEl = document.getElementById('ls-pct');
+    if (pctEl) pctEl.textContent = pct + '%';
+
+    const stEl  = document.getElementById('ls-status');
+    if (stEl) stEl.innerHTML = answered ? statusBadge(status) : '<span class="badge neutral">Нет ответов</span>';
 }
 
 async function saveCallSessionAction(mode) {
     const name = $('#c-name').value.trim();
     if (!name) { toast('Укажите имя кандидата','warning'); return; }
-    const answers = [];
-    let pts = 0, max = 0;
-    document.querySelectorAll('.q-item').forEach(item => {
-        max += 1;
-        const sel = item.querySelector('.q-opt.sel-1, .q-opt.sel-h, .q-opt.sel-0');
-        const score = sel ? parseFloat(sel.dataset.score) : 0;
-        if (sel) pts += score;
-        const cm = item.querySelector('[data-q-comment]').value.trim();
-        answers.push({ question_id: item.dataset.qid, score, comment: cm || null });
-    });
-    const pct = max ? Math.round(pts/max*100) : 0;
+
+    const { answers, pts, answered, total, pct } = getSelectedQuestionAnswers();
+
+    if (mode !== 'draft' && answered === 0) {
+        toast('Нужно оценить хотя бы один вопрос. Неотвеченные вопросы не учитываются.', 'warning');
+        return;
+    }
+
     const finalStatus = mode === 'draft' ? 'draft' : calcStatus(pct);
 
     try {
@@ -708,14 +733,15 @@ async function saveCallSessionAction(mode) {
             call_replay_url: $('#c-replay-call').value.trim() || null,
             training_replay_url: $('#c-replay-train').value.trim() || null,
             total_points: pts,
-            max_points: max,
+            // max_points теперь = количество реально отвеченных вопросов, а не все активные вопросы
+            max_points: answered,
             percent: pct,
             status: finalStatus,
             comment: $('#c-comment').value.trim() || null,
             extra_comment: $('#c-extra').value.trim() || null
         }, answers);
 
-        toast(`Обзвон сохранён (${pct}%, ${finalStatus})`,'success');
+        toast(`Обзвон сохранён (${pts}/${answered} из ${total}, ${pct}%, ${finalStatus})`,'success');
         handleRoute(true);
     } catch (e) {
         console.error(e);
@@ -1208,13 +1234,14 @@ async function renderUsers(view) {
     if (!hasRole('owner','admin')) { view.innerHTML = `<div class="empty">Нет доступа</div>`; return; }
     const [users, admins] = await Promise.all([loadUsers(), loadAdmins()]);
     State.cache.users = users; State.cache.admins = admins;
+    const canManageUsers = hasRole('owner');
 
     view.innerHTML = `
         <h2>Пользователи / Администраторы доступа</h2>
         <div class="panel">
             <div class="panel-header">
-                <h3>Профили пользователей</h3>
-                ${hasRole('owner') ? `<button class="btn btn-primary" id="btn-add-user">+ Создать профиль</button>`:''}
+                <h3>Пользователи системы</h3>
+                ${canManageUsers ? `<button class="btn btn-primary" id="btn-add-user">+ Создать пользователя</button>`:''}
             </div>
             <div class="toolbar">
                 <input id="u-search" placeholder="Поиск..."/>
@@ -1233,8 +1260,8 @@ async function renderUsers(view) {
                 </tr></thead><tbody></tbody></table>
             </div>
             <p class="muted" style="margin-top:10px">
-                Поле <b>id</b> — это UUID из <code>auth.users</code> (создаётся в Supabase Dashboard или Edge Function).
-                Здесь создаётся/редактируется только <b>профиль</b>.
+                Пользователь создаётся прямо отсюда через Supabase Edge Function <code>manage-user</code>.
+                Один раз задеплойте функцию — дальше owner сможет создавать аккаунты без захода в Supabase Dashboard.
             </p>
         </div>
     `;
@@ -1250,7 +1277,7 @@ async function renderUsers(view) {
         $('#u-table tbody').innerHTML = rows.map(u => {
             const admin = admins.find(a => a.id === u.admin_id);
             return `<tr data-id="${u.id}">
-                <td><code style="font-size:11px">${escapeHtml(u.id.slice(0,8))}…</code></td>
+                <td><code style="font-size:11px">${escapeHtml(String(u.id || '').slice(0,8))}…</code></td>
                 <td>${escapeHtml(u.email||'—')}</td>
                 <td>${escapeHtml(u.display_name||'—')}</td>
                 <td>${roleBadge(u.access_role)}</td>
@@ -1258,8 +1285,10 @@ async function renderUsers(view) {
                 <td>${u.is_active ? '<span class="badge success">Да</span>' : '<span class="badge danger">Нет</span>'}</td>
                 <td>${fmtDate(u.created_at)}</td>
                 <td class="actions">
-                    <button class="btn btn-sm" data-act="edit">✎</button>
-                    <button class="btn btn-sm" data-act="toggle">${u.is_active?'⏸':'▶'}</button>
+                    ${canManageUsers ? `
+                        <button class="btn btn-sm" data-act="edit">✎</button>
+                        <button class="btn btn-sm" data-act="toggle">${u.is_active?'⏸':'▶'}</button>
+                    ` : '<span class="muted">только просмотр</span>'}
                 </td>
             </tr>`;
         }).join('') || `<tr><td colspan="8" class="muted">Нет данных</td></tr>`;
@@ -1268,20 +1297,36 @@ async function renderUsers(view) {
     $('#u-search').oninput = render;
     $('#u-role').onchange = render;
 
-    if (hasRole('owner')) {
+    if (canManageUsers) {
         $('#btn-add-user').onclick = () => userProfileModal(null, admins, () => handleRoute(true));
+
+        $('#u-table tbody').addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-act]'); if (!btn) return;
+            const id = btn.closest('tr').dataset.id;
+            const u = users.find(x => x.id === id);
+            if (!u) return;
+
+            if (btn.dataset.act === 'toggle') {
+                try {
+                    const saved = await adminUpdateUser({
+                        id: u.id,
+                        email: u.email,
+                        display_name: u.display_name,
+                        access_role: u.access_role,
+                        admin_id: u.admin_id,
+                        is_active: !u.is_active
+                    });
+                    Object.assign(u, saved);
+                    render();
+                    toast('Готово','success');
+                } catch(er) {
+                    toast('Ошибка: '+er.message,'danger');
+                }
+            } else if (btn.dataset.act === 'edit') {
+                userProfileModal(u, admins, (upd) => { Object.assign(u, upd); render(); });
+            }
+        });
     }
-    $('#u-table tbody').addEventListener('click', async (e) => {
-        const btn = e.target.closest('button[data-act]'); if (!btn) return;
-        const id = btn.closest('tr').dataset.id;
-        const u = users.find(x => x.id === id);
-        if (btn.dataset.act === 'toggle') {
-            try { const upd = await disableUser(id, u.is_active); Object.assign(u, upd); render(); toast('Готово','success'); }
-            catch(er){ toast('Ошибка: '+er.message,'danger'); }
-        } else if (btn.dataset.act === 'edit') {
-            userProfileModal(u, admins, (upd) => { Object.assign(u, upd); render(); });
-        }
-    });
 
     render();
 }
@@ -1289,13 +1334,17 @@ async function renderUsers(view) {
 function userProfileModal(u, admins, onSave) {
     const isNew = !u;
     openModal({
-        title: isNew ? 'Создать профиль пользователя' : 'Профиль пользователя',
+        title: isNew ? 'Создать пользователя' : 'Редактирование пользователя',
         body: `
             <div class="form-grid">
-                <div class="form-row"><label>UUID пользователя (из auth.users) *</label>
-                    <input id="up-id" value="${u?.id||''}" ${u?'readonly':''} placeholder="00000000-0000-..."/></div>
-                <div class="form-row"><label>Email</label><input id="up-email" value="${u?.email||''}"/></div>
-                <div class="form-row"><label>Имя / ник</label><input id="up-name" value="${u?.display_name||''}"/></div>
+                ${isNew ? '' : `
+                <div class="form-row"><label>ID пользователя</label>
+                    <input id="up-id" value="${u?.id||''}" readonly /></div>`}
+                <div class="form-row"><label>Email для входа *</label>
+                    <input id="up-email" type="email" value="${escapeHtml(u?.email||'')}" placeholder="user@example.com"/></div>
+                <div class="form-row"><label>Пароль ${isNew ? '*' : '(оставьте пустым, если не менять)'}</label>
+                    <input id="up-password" type="password" autocomplete="new-password" placeholder="${isNew ? 'Минимум 6 символов' : 'Новый пароль'}"/></div>
+                <div class="form-row"><label>Имя / ник</label><input id="up-name" value="${escapeHtml(u?.display_name||'')}"/></div>
                 <div class="form-row"><label>Роль</label>
                     <select id="up-role">
                         <option value="owner"       ${u?.access_role==='owner'?'selected':''}>owner</option>
@@ -1315,29 +1364,44 @@ function userProfileModal(u, admins, onSave) {
                     </select></div>
             </div>
             <p class="muted" style="margin-top:10px">
-                💡 Чтобы создать сам Auth-аккаунт — перейдите в Supabase Dashboard → Authentication → Add user,
-                скопируйте оттуда UUID и вставьте сюда.
+                Аккаунт создаётся через Edge Function <code>manage-user</code>. 
+                Secret/service_role ключ хранится только в Supabase Function, не в GitHub Pages.
             </p>
         `,
         footer: `<button class="btn" data-cancel>Отмена</button>
-                 <button class="btn btn-primary" data-save>Сохранить</button>`
+                 <button class="btn btn-primary" data-save>${isNew ? 'Создать' : 'Сохранить'}</button>`
     });
     $('[data-cancel]').onclick = closeModal;
     $('[data-save]').onclick = async () => {
-        const id = $('#up-id').value.trim();
-        if (!id) return toast('Укажите UUID','warning');
+        const email = $('#up-email').value.trim();
+        const password = $('#up-password').value;
+        if (!email) return toast('Укажите email','warning');
+        if (isNew && password.length < 6) return toast('Пароль должен быть минимум 6 символов','warning');
+        if (!isNew && password && password.length < 6) return toast('Новый пароль должен быть минимум 6 символов','warning');
+
         const payload = {
-            id,
-            email: $('#up-email').value.trim() || null,
+            id: u?.id,
+            email,
+            password: password || undefined,
             display_name: $('#up-name').value.trim() || null,
             access_role: $('#up-role').value,
             admin_id: $('#up-admin').value || null,
             is_active: $('#up-active').value === 'true'
         };
+
         try {
-            const saved = await saveUserProfile(payload);
-            onSave(saved); closeModal(); toast('Сохранено','success');
-        } catch (e) { toast('Ошибка: '+e.message,'danger'); }
+            const saved = isNew ? await adminCreateUser(payload) : await adminUpdateUser(payload);
+            onSave(saved);
+            closeModal();
+            toast(isNew ? 'Пользователь создан' : 'Пользователь обновлён','success');
+        } catch (e) {
+            const msg = e.message || String(e);
+            if (msg.includes('FunctionsFetchError') || msg.includes('not found')) {
+                toast('Edge Function manage-user не настроена или не задеплоена', 'danger', 7000);
+            } else {
+                toast('Ошибка: '+msg,'danger', 7000);
+            }
+        }
     };
 }
 

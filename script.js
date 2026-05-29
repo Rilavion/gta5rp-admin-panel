@@ -2087,17 +2087,32 @@ async function renderArchive(view) {
     const archAdmins = admins.filter(a => !a.is_active);
     const archProm = promotions.filter(p => p.status === 'rejected' || p.status === 'promoted');
 
+    const isOwner = hasRole('owner');
+
     view.innerHTML = `
         <h2>Архив</h2>
         <div class="cards">
-            <div class="card"><div class="card-label">Архивные админы</div><div class="card-value">${archAdmins.length}</div></div>
+            <div class="card"><div class="card-label">Замороженные</div><div class="card-value">${archAdmins.length}</div></div>
             <div class="card"><div class="card-label">История повышений</div><div class="card-value">${archProm.length}</div></div>
             <div class="card"><div class="card-label">Отключённые вопросы</div><div class="card-value">${questions.filter(q=>!q.is_active).length}</div></div>
         </div>
         <div class="panel">
-            <div class="panel-header"><h3>Архивные администраторы</h3></div>
-            <div class="table-wrap"><table class="data"><thead><tr><th>Имя</th><th>Ранг</th><th>Вступил</th><th>Комментарий</th></tr></thead><tbody>
-            ${archAdmins.map(a => `<tr><td>${escapeHtml(a.display_name)}</td><td>${escapeHtml(adminPositionLabel(a))}</td><td>${fmtDate(a.joined_at)}</td><td>${escapeHtml(a.comment||'')}</td></tr>`).join('') || `<tr><td colspan="4" class="muted">Пусто</td></tr>`}
+            <div class="panel-header"><h3>Замороженные администраторы</h3></div>
+            <div class="table-wrap"><table class="data" id="arch-admins"><thead><tr>
+                <th>Имя</th><th>Ранг</th><th>Discord</th><th>Вступил</th><th>Комментарий</th>
+                <th style="width:160px">Действия</th>
+            </tr></thead><tbody>
+            ${archAdmins.map(a => `<tr data-id="${a.id}">
+                <td>${escapeHtml(a.display_name)}</td>
+                <td>${escapeHtml(adminPositionLabel(a))}</td>
+                <td>${escapeHtml(a.discord||'—')}</td>
+                <td>${fmtDate(a.joined_at)}</td>
+                <td>${escapeHtml(a.comment||'')}</td>
+                <td class="actions">
+                    <button class="btn btn-sm btn-success" data-act="restore">▶ Восстановить</button>
+                    ${isOwner ? '<button class="btn btn-sm btn-danger" data-act="del">🗑 Удалить</button>' : ''}
+                </td>
+            </tr>`).join('') || `<tr><td colspan="6" class="muted">Пусто</td></tr>`}
             </tbody></table></div>
         </div>
         <div class="panel">
@@ -2107,6 +2122,30 @@ async function renderArchive(view) {
             </tbody></table></div>
         </div>
     `;
+
+    const archTable = $('#arch-admins tbody');
+    if (archTable) {
+        archTable.addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-act]'); if (!btn) return;
+            const id = btn.closest('tr').dataset.id;
+            const a = archAdmins.find(x => x.id === id); if (!a) return;
+            if (btn.dataset.act === 'restore') {
+                if (!await confirmDialog('Восстановить ' + a.display_name + '?')) return;
+                try {
+                    await updateAdmin(id, { is_active: true });
+                    toast('Восстановлен', 'success');
+                    handleRoute(true);
+                } catch(er) { toast('Ошибка: '+er.message,'danger'); }
+            } else if (btn.dataset.act === 'del') {
+                if (!await confirmDialog('Удалить ' + a.display_name + ' навсегда? Все связанные данные будут удалены.')) return;
+                try {
+                    await deleteAdmin(id);
+                    toast('Удалён', 'success');
+                    handleRoute(true);
+                } catch(er) { toast('Ошибка: '+er.message,'danger'); }
+            }
+        });
+    }
 }
 
 // =====================================================================

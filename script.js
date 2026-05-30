@@ -1530,7 +1530,7 @@ async function renderAdmins(view) {
                         <td class="actions">
                             <button class="btn btn-sm" data-act="view">👁</button>
                             ${canEdit?`<button class="btn btn-sm" data-act="edit">✎</button>`:''}
-                            ${canEdit?`<button class="btn btn-sm btn-warning" data-act="freeze">${a.is_active?'❄️':'▶'}</button>`:''}
+                            ${canEdit?`<button class="btn btn-sm" data-act="freeze">${a.is_active?'⏸ Заморозить':'▶ Разморозить'}</button>`:''}
                             ${hasRole('owner')?`<button class="btn btn-sm btn-danger" data-act="del">🗑</button>`:''}
                         </td>
                     </tr>`).join('')}

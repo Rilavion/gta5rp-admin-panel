@@ -18,7 +18,9 @@ const State = {
         promotions: [],
         payments: [],
         users: [],
-        departments: []
+        departments: [],
+        tariffs: [],
+        rolePermissions: []
     },
     currentCsvRows: null,
     currentCsvName: 'export.csv'
@@ -44,11 +46,7 @@ const DEFAULT_APPEARANCE = {
     density: 'comfortable'
 };
 
-const DEFAULT_DEPARTMENTS = [
-    { name: 'Общая администрация', show_calls: true, show_reports: true, show_trainings: true, show_activity: true, show_punishments: true, sort_order: 10 },
-    { name: 'Отдел набора', show_calls: true, show_reports: false, show_trainings: true, show_activity: true, show_punishments: true, sort_order: 20 },
-    { name: 'Руководство', show_calls: true, show_reports: true, show_trainings: true, show_activity: true, show_punishments: true, sort_order: 30 }
-];
+const DEFAULT_DEPARTMENTS = [];
 
 function normalizeDepartment(dep = {}) {
     return {
@@ -160,6 +158,40 @@ function normalizeAdminPayload(payload) {
     };
 }
 
+
+// Permission system cache
+let _permCache = null;
+
+async function loadPermCache() {
+    if (_permCache) return _permCache;
+    try {
+        const perms = await loadRolePermissions();
+        _permCache = {};
+        perms.forEach(p => _permCache[p.role_name] = p.permissions || {});
+        return _permCache;
+    } catch { return {}; }
+}
+
+function clearPermCache() { _permCache = null; }
+
+function hasPerm(perm) {
+    const role = SB.profile?.access_role;
+    if (!role) return false;
+    if (role === 'owner') return true;
+    if (!_permCache || !_permCache[role]) return false;
+    return !!_permCache[role][perm];
+}
+
+function canSeePage(page) {
+    const role = SB.profile?.access_role;
+    if (!role) return false;
+    if (role === 'owner') return true;
+    if (!_permCache || !_permCache[role]) return true; // fallback to ROUTES
+    const pages = _permCache[role].pages;
+    if (!pages) return true;
+    return pages.includes(page);
+}
+
 const ROUTES = {
     dashboard:     { title: 'Главная',                 roles: ['owner','admin','interviewer','viewer'] },
     calls:         { title: 'Обзвоны',                 roles: ['owner','admin','interviewer'] },
@@ -175,6 +207,8 @@ const ROUTES = {
     'promotion-set':{ title:'Настройки повышения',     roles: ['owner','admin'] },
     payments:      { title: 'Выплаты / донат',         roles: ['owner','admin','viewer'] },
     archive:       { title: 'Архив',                   roles: ['owner','admin'] },
+    pricelist:     { title: 'Прайс-лист',              roles: ['owner','admin','interviewer','viewer'] },
+    permissions:   { title: 'Права ролей',              roles: ['owner'] },
     settings:      { title: 'Настройки',               roles: ['owner','admin','interviewer','viewer'] }
 };
 
@@ -348,6 +382,7 @@ async function tryEnterApp() {
     console.log('[LiveRP] tryEnterApp: checking auth...');
     const r = await requireAuth();
     console.log('[LiveRP] requireAuth result:', r ? 'OK' : 'NULL', r?.profile?.access_role);
+    if (r) await loadPermCache();
     if (!r) {
         toast('Не удалось авторизоваться. Откройте консоль (F12) для деталей.', 'danger', 8000);
         return false;
@@ -434,9 +469,12 @@ function renderTopbarMeta() {
 function applyRouteVisibility() {
     const role = State.profile?.access_role || 'viewer';
     $$('#sidebar-nav .nav-link').forEach(a => {
-        const r = ROUTES[a.dataset.route];
+        const route = a.dataset.route;
+        const r = ROUTES[route];
         if (!r) return;
-        if (r.roles.includes(role)) a.classList.remove('disabled');
+        const baseAccess = r.roles.includes(role);
+        const permAccess = canSeePage(route);
+        if (baseAccess && permAccess) a.classList.remove('disabled');
         else a.classList.add('disabled');
     });
 }
@@ -476,6 +514,8 @@ async function handleRoute(force=false) {
             case 'promotion-set': return await renderPromotionSettings(view);
             case 'payments':      return await renderPayments(view);
             case 'archive':       return await renderArchive(view);
+            case 'pricelist':     return await renderPricelist(view);
+            case 'permissions':   return await renderPermissions(view);
             case 'settings':      return await renderSettings(view);
         }
     } catch (e) {
@@ -1441,7 +1481,7 @@ async function renderDepartments(view) {
             if (btn.dataset.act === 'edit') {
                 departmentModal(dep, () => handleRoute(true));
             } else if (btn.dataset.act === 'delete') {
-                if (!dep?.id) return toast('Этот отдел нельзя удалить','warning');
+                if (!dep?.id) return toast('Этот отдел не сохранён в базе','warning');
                 const members = admins.filter(a => a.is_active && (a.branch||'Общая администрация') === dep.name);
                 if (members.length > 0) return toast('В отделе есть ' + members.length + ' участник(ов). Переведите их.','warning');
                 if (!await confirmDialog('Удалить отдел ' + dep.name + '?')) return;
@@ -1998,7 +2038,8 @@ function promoSetModal(s, onSave) {
 // 15. Выплаты
 // =====================================================================
 async function renderPayments(view) {
-    const [payments, admins] = await Promise.all([loadPayments(), loadAdmins(false)]);
+    const [payments, admins, tariffs] = await Promise.all([loadPayments(), loadAdmins(false), loadTariffs()]);
+    State.cache.tariffs = tariffs;
     State.cache.payments = payments;
     const canEdit = hasRole('owner','admin');
     const weekAgo = new Date(Date.now() - 7*86400000).toISOString().slice(0,10);
@@ -2012,7 +2053,7 @@ async function renderPayments(view) {
             <div class="form-grid">
                 <div class="form-row"><label>Дата</label><input id="p-date" type="datetime-local" value="${new Date().toISOString().slice(0,16)}"/></div>
                 <div class="form-row"><label>Администратор *</label><select id="p-admin"><option value="">—</option>${admins.map(a=>`<option value="${a.id}">${escapeHtml(a.display_name)}</option>`).join('')}</select></div>
-                <div class="form-row"><label>Тип</label><select id="p-type"><option value="report">Репорт</option><option value="punishment">Наказание</option><option value="watch">Слежка</option><option value="delivery">Поставка</option><option value="robbery">Ограбление</option><option value="event">Мероприятие</option><option value="call">Обзвон</option><option value="training">Обучение</option><option value="online">Онлайн</option><option value="curator_bonus">Кураторка</option><option value="other">Другое</option></select></div>
+                <div class="form-row"><label>Тип</label><select id="p-type">${(State.cache.tariffs||[]).filter(t=>t.is_active).map(t=>'<option value="'+escapeHtml(t.key)+'">'+escapeHtml(t.name)+'</option>').join('')||'<option value="other">Другое</option>'}</select></div>
                 <div class="form-row"><label>Кол-во</label><input id="p-amount" type="number" value="1" min="0"/></div>
                 <div class="form-row"><label>Тариф</label><input id="p-tariff" type="number" value="20" min="0"/></div>
                 <div class="form-row"><label>Вычет %</label><input id="p-deduct" type="number" value="0" min="0" max="100"/></div>
@@ -2057,7 +2098,17 @@ async function renderPayments(view) {
             const fin = amount * tariff * mult * (1 - ded/100);
             $('#p-preview').textContent = fin.toFixed(0);
         };
-        $('#p-type').onchange = () => { $('#p-tariff').value = DEFAULT_TARIFFS[$('#p-type').value] ?? 0; recalc(); };
+        $('#p-type').onchange = () => {
+            const key = $('#p-type').value;
+            const tariff = (State.cache.tariffs||[]).find(t => t.key === key);
+            const isNight = $('#p-mult').value === '2';
+            if (tariff) {
+                $('#p-tariff').value = isNight && tariff.night_rate != null ? tariff.night_rate : tariff.base_rate || 0;
+            } else {
+                $('#p-tariff').value = DEFAULT_TARIFFS[key] ?? 0;
+            }
+            recalc();
+        };
         ['p-amount','p-tariff','p-mult','p-deduct'].forEach(id => $('#'+id).oninput = recalc);
         recalc();
         $('#btn-add-pay').onclick = async () => {
@@ -2081,6 +2132,8 @@ async function renderPayments(view) {
 }
 
 function activityLabel(t) {
+    const fromCache = (State.cache.tariffs||[]).find(tr => tr.key === t);
+    if (fromCache) return fromCache.name;
     return ({ report:'Репорт', punishment:'Наказание', watch:'Слежка', delivery:'Поставка', robbery:'Ограбление', event:'Мероприятие', call:'Обзвон', training:'Обучение', online:'Онлайн', curator_bonus:'Кураторка', other:'Другое' })[t] || t || '—';
 }
 
@@ -2156,6 +2209,174 @@ async function renderArchive(view) {
     }
 }
 
+
+// =====================================================================
+// Прайс-лист
+// =====================================================================
+async function renderPricelist(view) {
+    const tariffs = await loadTariffs();
+    State.cache.tariffs = tariffs;
+    const canEdit = hasRole('owner') || hasPerm('can_edit_tariffs');
+
+    view.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+            <h2 style="margin:0">Прайс-лист</h2>
+            ${canEdit ? '<button class="btn btn-primary" id="btn-add-tariff">+ Добавить позицию</button>' : ''}
+        </div>
+        <div class="panel">
+            <div class="table-wrap">
+                <table class="data" id="tariff-table"><thead><tr>
+                    <th>Название</th><th>Ключ</th><th class="num">Ставка (день)</th><th class="num">Ставка (ночь)</th>
+                    <th>Описание</th><th>Статус</th>${canEdit ? '<th style="width:140px">Действия</th>' : ''}
+                </tr></thead><tbody>
+                ${tariffs.map(t => '<tr data-id="' + t.id + '">' +
+                    '<td><b>' + escapeHtml(t.name) + '</b></td>' +
+                    '<td><code>' + escapeHtml(t.key) + '</code></td>' +
+                    '<td class="num">' + (t.base_rate||0) + '</td>' +
+                    '<td class="num">' + (t.night_rate != null ? t.night_rate : '—') + '</td>' +
+                    '<td>' + escapeHtml(t.description||'') + '</td>' +
+                    '<td>' + (t.is_active ? '<span class="badge success">Вкл</span>' : '<span class="badge neutral">Выкл</span>') + '</td>' +
+                    (canEdit ? '<td class="actions"><button class="btn btn-sm" data-act="edit">✎</button><button class="btn btn-sm btn-danger" data-act="del">🗑</button></td>' : '') +
+                '</tr>').join('') || '<tr><td colspan="7" class="muted">Нет тарифов</td></tr>'}
+                </tbody></table>
+            </div>
+        </div>
+    `;
+
+    if (canEdit) {
+        const addBtn = $('#btn-add-tariff');
+        if (addBtn) addBtn.onclick = () => tariffModal(null, () => handleRoute(true));
+
+        $('#tariff-table tbody').addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-act]'); if (!btn) return;
+            const id = btn.closest('tr').dataset.id;
+            const t = tariffs.find(x => x.id === id);
+            if (btn.dataset.act === 'edit') {
+                tariffModal(t, () => handleRoute(true));
+            } else if (btn.dataset.act === 'del') {
+                if (!await confirmDialog('Удалить тариф ' + t.name + '?')) return;
+                try { await deleteTariff(id); toast('Удалён','success'); handleRoute(true); }
+                catch(er) { toast('Ошибка: '+er.message,'danger'); }
+            }
+        });
+    }
+}
+
+function tariffModal(t, onSave) {
+    const isNew = !t;
+    openModal({
+        title: isNew ? 'Новый тариф' : 'Редактирование тарифа',
+        body: '<div class="form-grid">' +
+            '<div class="form-row"><label>Название *</label><input id="tf-name" value="' + escapeHtml(t?.name||'') + '"/></div>' +
+            '<div class="form-row"><label>Ключ (латиница) *</label><input id="tf-key" value="' + escapeHtml(t?.key||'') + '" ' + (t ? 'readonly' : '') + ' placeholder="report, watch..."/></div>' +
+            '<div class="form-row"><label>Ставка (день)</label><input id="tf-rate" type="number" value="' + (t?.base_rate||0) + '"/></div>' +
+            '<div class="form-row"><label>Ставка (ночь)</label><input id="tf-night" type="number" value="' + (t?.night_rate||'') + '" placeholder="Пусто = нет ночной"/></div>' +
+            '<div class="form-row"><label>Порядок</label><input id="tf-order" type="number" value="' + (t?.sort_order||100) + '"/></div>' +
+            '<div class="form-row"><label>Активен</label><select id="tf-active"><option value="true" ' + (t?.is_active!==false?'selected':'') + '>Да</option><option value="false" ' + (t?.is_active===false?'selected':'') + '>Нет</option></select></div>' +
+            '<div class="form-row" style="grid-column:1/-1"><label>Описание</label><input id="tf-desc" value="' + escapeHtml(t?.description||'') + '"/></div>' +
+        '</div>',
+        footer: '<button class="btn" data-cancel>Отмена</button><button class="btn btn-primary" data-save>Сохранить</button>'
+    });
+    $('[data-cancel]').onclick = closeModal;
+    $('[data-save]').onclick = async () => {
+        const name = $('#tf-name').value.trim();
+        const key = $('#tf-key').value.trim();
+        if (!name || !key) return toast('Название и ключ обязательны','warning');
+        const nightVal = $('#tf-night').value.trim();
+        const payload = {
+            name, key,
+            base_rate: parseFloat($('#tf-rate').value)||0,
+            night_rate: nightVal !== '' ? parseFloat(nightVal) : null,
+            sort_order: parseInt($('#tf-order').value)||100,
+            is_active: $('#tf-active').value === 'true',
+            description: $('#tf-desc').value.trim()||null
+        };
+        if (t?.id) payload.id = t.id;
+        try { await saveTariff(payload); closeModal(); toast('Сохранено','success'); onSave(); }
+        catch(er) { toast('Ошибка: '+er.message,'danger'); }
+    };
+}
+
+// =====================================================================
+// Права ролей
+// =====================================================================
+async function renderPermissions(view) {
+    if (!hasRole('owner')) { view.innerHTML = '<div class="empty">Только owner может управлять правами</div>'; return; }
+    const perms = await loadRolePermissions();
+
+    const ALL_PAGES = Object.keys(ROUTES);
+    const ALL_PERMS = [
+        { key: 'can_create_admins', label: 'Создание администраторов' },
+        { key: 'can_edit_admins', label: 'Редактирование администраторов' },
+        { key: 'can_freeze_admins', label: 'Заморозка администраторов' },
+        { key: 'can_delete_admins', label: 'Удаление администраторов' },
+        { key: 'can_create_discipline', label: 'Создание наказаний' },
+        { key: 'can_delete_discipline', label: 'Удаление наказаний' },
+        { key: 'can_create_payments', label: 'Создание выплат' },
+        { key: 'can_delete_payments', label: 'Удаление выплат' },
+        { key: 'can_edit_questions', label: 'Редактирование вопросов' },
+        { key: 'can_delete_questions', label: 'Удаление вопросов' },
+        { key: 'can_edit_departments', label: 'Редактирование отделов' },
+        { key: 'can_delete_departments', label: 'Удаление отделов' },
+        { key: 'can_edit_calls', label: 'Редактирование обзвонов' },
+        { key: 'can_delete_calls', label: 'Удаление обзвонов' },
+        { key: 'can_manage_users', label: 'Управление пользователями' },
+        { key: 'can_edit_tariffs', label: 'Редактирование прайс-листа' },
+        { key: 'can_edit_promotions', label: 'Повышение/понижение' },
+        { key: 'can_edit_permissions', label: 'Управление правами' }
+    ];
+
+    const roles = ['admin','interviewer','viewer'];
+
+    view.innerHTML = '<h2>🔐 Права ролей</h2>' +
+        '<p class="muted" style="margin-bottom:20px">Owner имеет все права. Здесь настраиваются права для admin, interviewer и viewer.</p>' +
+        roles.map(role => {
+            const rp = perms.find(p => p.role_name === role);
+            const p = rp?.permissions || {};
+            const pages = p.pages || [];
+            return '<div class="panel" data-role="' + role + '">' +
+                '<div class="panel-header"><h3>' + roleBadge(role) + ' ' + role + '</h3>' +
+                '<button class="btn btn-primary btn-sm" data-save-role="' + role + '">Сохранить</button></div>' +
+                '<h4 style="margin:10px 0 8px">Доступ к страницам</h4>' +
+                '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px">' +
+                ALL_PAGES.map(pg => {
+                    const title = ROUTES[pg]?.title || pg;
+                    return '<label class="check-row"><input type="checkbox" data-page="' + pg + '" ' + (pages.includes(pg)?'checked':'') + '/> ' + escapeHtml(title) + '</label>';
+                }).join('') +
+                '</div>' +
+                '<h4 style="margin:16px 0 8px">Разрешения</h4>' +
+                '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px">' +
+                ALL_PERMS.map(perm => {
+                    return '<label class="check-row"><input type="checkbox" data-perm="' + perm.key + '" ' + (p[perm.key]?'checked':'') + '/> ' + escapeHtml(perm.label) + '</label>';
+                }).join('') +
+                '</div>' +
+            '</div>';
+        }).join('');
+
+    // Save handlers
+    roles.forEach(role => {
+        const saveBtn = view.querySelector('[data-save-role="' + role + '"]');
+        if (!saveBtn) return;
+        saveBtn.onclick = async () => {
+            const panel = view.querySelector('[data-role="' + role + '"]');
+            const pages = [];
+            panel.querySelectorAll('[data-page]').forEach(cb => {
+                if (cb.checked) pages.push(cb.dataset.page);
+            });
+            const permissions = { pages };
+            panel.querySelectorAll('[data-perm]').forEach(cb => {
+                permissions[cb.dataset.perm] = cb.checked;
+            });
+            try {
+                await saveRolePermissions({ role_name: role, permissions });
+                clearPermCache();
+                await loadPermCache();
+                applyRouteVisibility();
+                toast('Права ' + role + ' сохранены', 'success');
+            } catch(er) { toast('Ошибка: '+er.message,'danger'); }
+        };
+    });
+}
 // =====================================================================
 // 17. Настройки
 // =====================================================================

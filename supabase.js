@@ -711,6 +711,61 @@ async function writeAuditLog(action, entityType, entityId, details) {
     }
 }
 
+
+// ---------------------------------------------------------------------
+// Tariffs / Прайс-лист
+// ---------------------------------------------------------------------
+async function loadTariffs() {
+    const { data, error } = await SB.client
+        .from('tariffs')
+        .select('*')
+        .order('sort_order');
+    if (error) throw error;
+    return data || [];
+}
+
+async function saveTariff(tariff) {
+    const payload = { ...tariff };
+    if (!payload.id) delete payload.id;
+    const { data, error } = await SB.client
+        .from('tariffs')
+        .upsert(payload, { onConflict: 'id' })
+        .select()
+        .single();
+    if (error) throw error;
+    await writeAuditLog('upsert', 'tariff', data.id, payload);
+    return data;
+}
+
+async function deleteTariff(id) {
+    const { error } = await SB.client.from('tariffs').delete().eq('id', id);
+    if (error) throw error;
+    await writeAuditLog('delete', 'tariff', id, {});
+}
+
+// ---------------------------------------------------------------------
+// Role Permissions
+// ---------------------------------------------------------------------
+async function loadRolePermissions() {
+    const { data, error } = await SB.client
+        .from('role_permissions')
+        .select('*')
+        .order('role_name');
+    if (error) throw error;
+    return data || [];
+}
+
+async function saveRolePermissions(rolePerms) {
+    const { data, error } = await SB.client
+        .from('role_permissions')
+        .upsert(rolePerms, { onConflict: 'role_name' })
+        .select()
+        .single();
+    if (error) throw error;
+    await writeAuditLog('upsert', 'role_permissions', data.id, rolePerms);
+    return data;
+}
+
 // Экспортируем в window для удобства
 Object.assign(window, {
     initSupabase, login, logout, getCurrentUser, getCurrentProfile, requireAuth, hasRole,
@@ -724,5 +779,7 @@ Object.assign(window, {
     loadPromotionSettings, savePromotionSettings, loadPromotions,
     calculatePromotionReadiness, approvePromotion, rejectPromotion,
     loadPayments, createPayment, deletePayment,
+    loadTariffs, saveTariff, deleteTariff,
+    loadRolePermissions, saveRolePermissions,
     exportData, importData, writeAuditLog
 });

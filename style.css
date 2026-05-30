@@ -1185,6 +1185,20 @@ body[data-theme="light"] code {
     color: var(--text);
 }
 
+/* =================== Answer Hint Toggle =================== */
+.q-hint {
+    user-select: none;
+}
+.q-hint .q-hint-text {
+    display: none;
+}
+.q-hint.open .q-hint-label {
+    display: none;
+}
+.q-hint.open .q-hint-text {
+    display: inline !important;
+}
+
 /* =================== Responsive =================== */
 @media (max-width: 900px) {
     .app { grid-template-columns: 1fr; }

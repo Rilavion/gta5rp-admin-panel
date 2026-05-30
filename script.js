@@ -683,6 +683,7 @@ async function renderCalls(view) {
                         <div class="q-item" data-qid="${q.id}">
                             <div>
                                 <div class="q-text">${escapeHtml(q.question_text)}</div>
+                                ${q.answer_hint ? `<div class="q-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted);font-style:italic;cursor:pointer" onclick="this.classList.toggle('open')" title="Нажмите чтобы показать/скрыть ответ"><span class="q-hint-label">💡 Показать ответ</span><span class="q-hint-text" style="display:none;color:var(--success);font-style:normal"> ${escapeHtml(q.answer_hint)}</span></div>` : ''}
                                 <div class="q-comment"><input data-q-comment placeholder="Комментарий (необязательно)"/></div>
                             </div>
                             <div class="q-options">
@@ -842,6 +843,8 @@ async function renderQuestions(view) {
                 <div class="form-row"><label>Порядок</label><input id="nq-order" type="number" value="100"/></div>
                 <div class="form-row" style="grid-column:1/-1"><label>Текст вопроса *</label>
                     <textarea id="nq-text" rows="2"></textarea></div>
+                <div class="form-row" style="grid-column:1/-1"><label>Ответ-подсказка (видна только проводящему)</label>
+                    <textarea id="nq-answer" rows="2" placeholder="Правильный ответ для проводящего обзвон"></textarea></div>
             </div>
             <div style="margin-top:10px"><button class="btn btn-primary" id="btn-add-q">Добавить</button></div>
         </div>` : ''}
@@ -857,8 +860,8 @@ async function renderQuestions(view) {
             </div>
             <div class="table-wrap">
                 <table class="data" id="q-table"><thead><tr>
-                    <th style="width:40px">№</th><th style="width:180px">Категория</th><th>Текст</th>
-                    <th style="width:70px">Порядок</th><th style="width:70px">Статус</th><th style="width:200px">Действия</th>
+                    <th style="width:40px">№</th><th style="width:160px">Категория</th><th>Текст</th><th>Ответ</th>
+                    <th style="width:60px">Порядок</th><th style="width:60px">Статус</th><th style="width:180px">Действия</th>
                 </tr></thead><tbody></tbody></table>
             </div>
         </div>
@@ -882,6 +885,7 @@ async function renderQuestions(view) {
                 <td>${i+1}</td>
                 <td>${escapeHtml(r.category)}</td>
                 <td>${escapeHtml(r.question_text)}</td>
+                <td style="max-width:200px;font-size:12px;color:var(--text-muted)">${escapeHtml(r.answer_hint||'—')}</td>
                 <td class="num">${r.order_index}</td>
                 <td>${r.is_active ? '<span class="badge success">Вкл</span>' : '<span class="badge neutral">Выкл</span>'}</td>
                 <td class="actions">
@@ -892,7 +896,7 @@ async function renderQuestions(view) {
                     ` : '—'}
                 </td>
             </tr>
-        `).join('') || `<tr><td colspan="6" class="muted">Нет вопросов</td></tr>`;
+        `).join('') || `<tr><td colspan="7" class="muted">Нет вопросов</td></tr>`;
         setCurrentCsv(rows.map(r => ({ category: r.category, question: r.question_text, order: r.order_index, active: r.is_active })), 'questions.csv');
     }
 
@@ -932,8 +936,9 @@ async function renderQuestions(view) {
             const order = parseInt($('#nq-order').value) || 0;
             if (!category || !text) return toast('Заполните категорию и текст','warning');
             try {
-                const q = await createQuestion({ category, question_text: text, order_index: order, is_active: true });
-                list.unshift(q); $('#nq-text').value = ''; toast('Вопрос добавлен','success'); render();
+                const answer = $('#nq-answer').value.trim() || null;
+                const q = await createQuestion({ category, question_text: text, order_index: order, is_active: true, answer_hint: answer });
+                list.unshift(q); $('#nq-text').value = ''; $('#nq-answer').value = ''; toast('Вопрос добавлен','success'); render();
             } catch (e) { toast('Ошибка: '+e.message,'danger'); }
         };
         $('#bulk-on').onclick  = () => bulkToggleVisible(true);
@@ -972,8 +977,10 @@ function editQuestionModal(q, onSave) {
         title: 'Редактирование вопроса',
         body: `
             <div class="form-row"><label>Категория</label><input id="eq-cat" value="${escapeHtml(q.category)}"/></div>
-            <div class="form-row" style="margin-top:8px"><label>Текст</label>
+            <div class="form-row" style="margin-top:8px"><label>Текст вопроса</label>
                 <textarea id="eq-text" rows="3">${escapeHtml(q.question_text)}</textarea></div>
+            <div class="form-row" style="margin-top:8px"><label>Ответ-подсказка</label>
+                <textarea id="eq-answer" rows="3" placeholder="Правильный ответ для проводящего обзвон">${escapeHtml(q.answer_hint||'')}</textarea></div>
             <div class="form-row" style="margin-top:8px"><label>Порядок</label>
                 <input id="eq-order" type="number" value="${q.order_index||0}"/></div>
         `,
@@ -986,6 +993,7 @@ function editQuestionModal(q, onSave) {
             const upd = await updateQuestion(q.id, {
                 category: $('#eq-cat').value.trim(),
                 question_text: $('#eq-text').value.trim(),
+                answer_hint: $('#eq-answer').value.trim() || null,
                 order_index: parseInt($('#eq-order').value)||0
             });
             onSave(upd); closeModal(); toast('Сохранено','success');

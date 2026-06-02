@@ -766,6 +766,67 @@ async function saveRolePermissions(rolePerms) {
     return data;
 }
 
+
+// ---------------------------------------------------------------------
+// Scheduled Calls / Запланированные обзвоны
+// ---------------------------------------------------------------------
+async function loadScheduledCalls() {
+    const { data, error } = await SB.client
+        .from('scheduled_calls')
+        .select('*')
+        .order('scheduled_date')
+        .order('scheduled_time');
+    if (error) throw error;
+    // Подмешиваем профили интервьюеров
+    const rows = data || [];
+    const ids = [...new Set(rows.map(r => r.interviewer_id).filter(Boolean))];
+    if (ids.length) {
+        const { data: profs } = await SB.client.from('user_profiles').select('id,email,display_name').in('id', ids);
+        const map = {};
+        (profs||[]).forEach(p => map[p.id] = p);
+        rows.forEach(r => { r.interviewer = map[r.interviewer_id] || null; });
+    }
+    // Подмешиваем тренеров
+    const trIds = [...new Set(rows.map(r => r.trainer_admin_id).filter(Boolean))];
+    if (trIds.length) {
+        const { data: admins } = await SB.client.from('admins').select('id,display_name').in('id', trIds);
+        const map = {};
+        (admins||[]).forEach(a => map[a.id] = a);
+        rows.forEach(r => { r.trainer = map[r.trainer_admin_id] || null; });
+    }
+    return rows;
+}
+
+async function createScheduledCall(sc) {
+    const payload = { ...sc, created_by: SB.user?.id || null };
+    const { data, error } = await SB.client
+        .from('scheduled_calls')
+        .insert(payload)
+        .select()
+        .single();
+    if (error) throw error;
+    await writeAuditLog('create', 'scheduled_call', data.id, payload);
+    return data;
+}
+
+async function updateScheduledCall(id, patch) {
+    const { data, error } = await SB.client
+        .from('scheduled_calls')
+        .update(patch)
+        .eq('id', id)
+        .select()
+        .single();
+    if (error) throw error;
+    await writeAuditLog('update', 'scheduled_call', id, patch);
+    return data;
+}
+
+async function deleteScheduledCall(id) {
+    const { error } = await SB.client.from('scheduled_calls').delete().eq('id', id);
+    if (error) throw error;
+    await writeAuditLog('delete', 'scheduled_call', id, {});
+}
+
 // Экспортируем в window для удобства
 Object.assign(window, {
     initSupabase, login, logout, getCurrentUser, getCurrentProfile, requireAuth, hasRole,
@@ -779,6 +840,7 @@ Object.assign(window, {
     loadPromotionSettings, savePromotionSettings, loadPromotions,
     calculatePromotionReadiness, approvePromotion, rejectPromotion,
     loadPayments, createPayment, deletePayment,
+    loadScheduledCalls, createScheduledCall, updateScheduledCall, deleteScheduledCall,
     loadTariffs, saveTariff, deleteTariff,
     loadRolePermissions, saveRolePermissions,
     exportData, importData, writeAuditLog

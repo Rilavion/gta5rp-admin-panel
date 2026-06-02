@@ -20,6 +20,7 @@ const State = {
         users: [],
         departments: [],
         tariffs: [],
+        scheduledCalls: [],
         rolePermissions: []
     },
     currentCsvRows: null,
@@ -195,6 +196,7 @@ function canSeePage(page) {
 const ROUTES = {
     dashboard:     { title: 'Главная',                 roles: ['owner','admin','interviewer','viewer'] },
     calls:         { title: 'Обзвоны',                 roles: ['owner','admin','interviewer'] },
+    scheduled:     { title: 'Запланированные',         roles: ['owner','admin','interviewer'] },
     questions:     { title: 'Конструктор вопросов',    roles: ['owner','admin','interviewer','viewer'] },
     history:       { title: 'История обзвонов',        roles: ['owner','admin','interviewer','viewer'] },
     stats:         { title: 'Статистика',              roles: ['owner','admin','interviewer','viewer'] },
@@ -502,6 +504,7 @@ async function handleRoute(force=false) {
         switch (route) {
             case 'dashboard':     return await renderDashboard(view);
             case 'calls':         return await renderCalls(view);
+            case 'scheduled':     return await renderScheduled(view);
             case 'questions':     return await renderQuestions(view);
             case 'history':       return await renderHistory(view);
             case 'stats':         return await renderStats(view);
@@ -661,6 +664,209 @@ function punishLabel(t) {
         points_off:'Снятие баллов', demotion:'Понижение', dismissal:'Снятие с должности',
         other:'Другое'
     })[t] || t || '—';
+}
+
+
+// =====================================================================
+// Запланированные обзвоны
+// =====================================================================
+async function renderScheduled(view) {
+    if (!hasRole('owner','admin','interviewer')) { view.innerHTML = '<div class="empty">Нет доступа</div>'; return; }
+    const [scheduled, admins, users] = await Promise.all([loadScheduledCalls(), loadAdmins(false), loadUsers()]);
+    State.cache.scheduledCalls = scheduled;
+    const canEdit = hasRole('owner','admin','interviewer');
+
+    const today = new Date().toISOString().slice(0,10);
+    const planned = scheduled.filter(s => s.status === 'planned' || s.status === 'confirmed');
+    const todayList = planned.filter(s => s.scheduled_date === today);
+    const upcoming = planned.filter(s => s.scheduled_date > today);
+    const past = scheduled.filter(s => s.status === 'completed' || s.status === 'cancelled' || s.status === 'no_show');
+
+    const statusLabel = (s) => ({
+        planned: '<span class="badge accent">Запланирован</span>',
+        confirmed: '<span class="badge success">Подтверждён</span>',
+        in_progress: '<span class="badge warning">Идёт</span>',
+        completed: '<span class="badge success">Завершён</span>',
+        cancelled: '<span class="badge neutral">Отменён</span>',
+        no_show: '<span class="badge danger">Не явился</span>'
+    })[s] || '<span class="badge neutral">' + escapeHtml(s) + '</span>';
+
+    const priorityLabel = (p) => ({
+        low: '<span class="badge neutral">Низкий</span>',
+        normal: '',
+        high: '<span class="badge warning">Высокий</span>',
+        urgent: '<span class="badge danger">Срочный</span>'
+    })[p] || '';
+
+    const renderTable = (rows, id) => {
+        if (!rows.length) return '<div class="empty" style="margin:10px 0">Нет записей</div>';
+        return '<div class="table-wrap"><table class="data" id="' + id + '"><thead><tr>' +
+            '<th>Дата</th><th>Время</th><th>Кандидат</th><th>Discord</th><th>Проводит</th>' +
+            '<th>Приоритет</th><th>Статус</th><th>Комментарий</th>' +
+            (canEdit ? '<th style="width:180px">Действия</th>' : '') +
+        '</tr></thead><tbody>' +
+        rows.map(s =>
+            '<tr data-id="' + s.id + '">' +
+            '<td>' + fmtDate(s.scheduled_date) + '</td>' +
+            '<td>' + escapeHtml(s.scheduled_time||'—') + '</td>' +
+            '<td><b>' + escapeHtml(s.candidate_name) + '</b></td>' +
+            '<td>' + escapeHtml(s.discord||'—') + '</td>' +
+            '<td>' + escapeHtml(s.interviewer?.display_name || s.interviewer?.email || '—') + '</td>' +
+            '<td>' + priorityLabel(s.priority) + '</td>' +
+            '<td>' + statusLabel(s.status) + '</td>' +
+            '<td>' + escapeHtml((s.comment||'').slice(0,40)) + '</td>' +
+            (canEdit ? '<td class="actions">' +
+                '<button class="btn btn-sm" data-act="edit">✎</button>' +
+                '<button class="btn btn-sm btn-success" data-act="start">📞</button>' +
+                '<button class="btn btn-sm btn-danger" data-act="del">🗑</button>' +
+            '</td>' : '') +
+            '</tr>'
+        ).join('') +
+        '</tbody></table></div>';
+    };
+
+    view.innerHTML =
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">' +
+            '<h2 style="margin:0">📅 Запланированные обзвоны</h2>' +
+            (canEdit ? '<button class="btn btn-primary" id="btn-add-scheduled">+ Запланировать</button>' : '') +
+        '</div>' +
+        '<div class="cards">' +
+            '<div class="card accent"><div class="card-label">Сегодня</div><div class="card-value">' + todayList.length + '</div></div>' +
+            '<div class="card"><div class="card-label">Предстоящие</div><div class="card-value">' + upcoming.length + '</div></div>' +
+            '<div class="card success"><div class="card-label">Всего запланировано</div><div class="card-value">' + planned.length + '</div></div>' +
+            '<div class="card neutral"><div class="card-label">Завершено / отменено</div><div class="card-value">' + past.length + '</div></div>' +
+        '</div>' +
+        (todayList.length ? '<div class="panel"><div class="panel-header"><h3>Сегодня (' + today + ')</h3></div>' + renderTable(todayList, 'sc-today') + '</div>' : '') +
+        '<div class="panel"><div class="panel-header"><h3>Предстоящие</h3></div>' + renderTable(upcoming, 'sc-upcoming') + '</div>' +
+        '<div class="panel"><div class="panel-header"><h3>Все записи</h3></div>' +
+            '<div class="toolbar">' +
+                '<select id="sc-filter-status"><option value="">Все статусы</option><option value="planned">Запланирован</option><option value="confirmed">Подтверждён</option><option value="completed">Завершён</option><option value="cancelled">Отменён</option><option value="no_show">Не явился</option></select>' +
+                '<input id="sc-search" placeholder="Поиск по имени..."/>' +
+            '</div>' +
+            '<div id="sc-all-table"></div>' +
+        '</div>';
+
+    // Filter & render all table
+    const renderAll = () => {
+        const st = ($('#sc-filter-status')?.value || '');
+        const q = ($('#sc-search')?.value || '').toLowerCase();
+        let rows = scheduled.filter(s => {
+            if (st && s.status !== st) return false;
+            if (q && !s.candidate_name.toLowerCase().includes(q) && !(s.discord||'').toLowerCase().includes(q)) return false;
+            return true;
+        });
+        $('#sc-all-table').innerHTML = renderTable(rows, 'sc-filtered');
+        bindTableActions($('#sc-filtered'));
+    };
+
+    const sFilter = $('#sc-filter-status');
+    const sSearch = $('#sc-search');
+    if (sFilter) sFilter.onchange = renderAll;
+    if (sSearch) sSearch.oninput = renderAll;
+
+    // Bind actions
+    function bindTableActions(table) {
+        if (!table) return;
+        table.querySelector('tbody')?.addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-act]'); if (!btn) return;
+            const id = btn.closest('tr').dataset.id;
+            const s = scheduled.find(x => x.id === id); if (!s) return;
+            if (btn.dataset.act === 'edit') {
+                scheduledModal(s, admins, users, () => handleRoute(true));
+            } else if (btn.dataset.act === 'start') {
+                // Go to calls page with pre-filled data
+                location.hash = '#calls';
+                setTimeout(() => {
+                    const nameEl = $('#c-name'); if (nameEl) nameEl.value = s.candidate_name;
+                    const discEl = $('#c-discord'); if (discEl) discEl.value = s.discord || '';
+                    const gameEl = $('#c-game'); if (gameEl) gameEl.value = s.game_nick || '';
+                    const ageEl = $('#c-age'); if (ageEl) ageEl.value = s.age || '';
+                    const tzEl = $('#c-tz'); if (tzEl) tzEl.value = s.timezone || '';
+                    const trainerEl = $('#c-trainer'); if (trainerEl && s.trainer_admin_id) trainerEl.value = s.trainer_admin_id;
+                    // Mark as in_progress
+                    updateScheduledCall(s.id, { status: 'in_progress' }).catch(() => {});
+                }, 500);
+            } else if (btn.dataset.act === 'del') {
+                if (!await confirmDialog('Удалить запланированный обзвон ' + s.candidate_name + '?')) return;
+                try { await deleteScheduledCall(id); scheduled.splice(scheduled.indexOf(s), 1); renderAll(); toast('Удалено','success'); handleRoute(true); }
+                catch(er) { toast('Ошибка: '+er.message,'danger'); }
+            }
+        });
+    }
+
+    // Bind all visible tables
+    ['sc-today','sc-upcoming'].forEach(id => bindTableActions($('#' + id)));
+    renderAll();
+
+    // Add button
+    const addBtn = $('#btn-add-scheduled');
+    if (addBtn) addBtn.onclick = () => scheduledModal(null, admins, users, () => handleRoute(true));
+}
+
+function scheduledModal(s, admins, users, onSave) {
+    const isNew = !s;
+    const interviewers = users.filter(u => u.is_active && ['owner','admin','interviewer'].includes(u.access_role));
+
+    openModal({
+        title: isNew ? 'Запланировать обзвон' : 'Редактирование',
+        body: '<div class="form-grid">' +
+            '<div class="form-row"><label>Имя / ник кандидата *</label><input id="sc-name" value="' + escapeHtml(s?.candidate_name||'') + '"/></div>' +
+            '<div class="form-row"><label>Discord</label><input id="sc-discord" value="' + escapeHtml(s?.discord||'') + '"/></div>' +
+            '<div class="form-row"><label>Игровой ник</label><input id="sc-game" value="' + escapeHtml(s?.game_nick||'') + '"/></div>' +
+            '<div class="form-row"><label>Возраст</label><input id="sc-age" type="number" value="' + (s?.age||'') + '"/></div>' +
+            '<div class="form-row"><label>Часовой пояс</label><input id="sc-tz" value="' + escapeHtml(s?.timezone||'') + '" placeholder="UTC+3"/></div>' +
+            '<div class="form-row"><label>Дата *</label><input id="sc-date" type="date" value="' + (s?.scheduled_date || new Date().toISOString().slice(0,10)) + '"/></div>' +
+            '<div class="form-row"><label>Время</label><input id="sc-time" type="time" value="' + escapeHtml(s?.scheduled_time||'') + '"/></div>' +
+            '<div class="form-row"><label>Проводит обзвон</label><select id="sc-interviewer"><option value="">— не назначен —</option>' +
+                interviewers.map(u => '<option value="' + u.id + '" ' + (s?.interviewer_id===u.id?'selected':'') + '>' + escapeHtml(u.display_name || u.email) + '</option>').join('') +
+            '</select></div>' +
+            '<div class="form-row"><label>Обучение проводил</label><select id="sc-trainer"><option value="">— не выбрано —</option>' +
+                admins.map(a => '<option value="' + a.id + '" ' + (s?.trainer_admin_id===a.id?'selected':'') + '>' + escapeHtml(adminShortLabel(a)) + '</option>').join('') +
+            '</select></div>' +
+            '<div class="form-row"><label>Приоритет</label><select id="sc-priority">' +
+                '<option value="low" ' + (s?.priority==='low'?'selected':'') + '>Низкий</option>' +
+                '<option value="normal" ' + (s?.priority==='normal'||!s?.priority?'selected':'') + '>Обычный</option>' +
+                '<option value="high" ' + (s?.priority==='high'?'selected':'') + '>Высокий</option>' +
+                '<option value="urgent" ' + (s?.priority==='urgent'?'selected':'') + '>Срочный</option>' +
+            '</select></div>' +
+            '<div class="form-row"><label>Статус</label><select id="sc-status">' +
+                '<option value="planned" ' + (s?.status==='planned'||!s?.status?'selected':'') + '>Запланирован</option>' +
+                '<option value="confirmed" ' + (s?.status==='confirmed'?'selected':'') + '>Подтверждён</option>' +
+                '<option value="completed" ' + (s?.status==='completed'?'selected':'') + '>Завершён</option>' +
+                '<option value="cancelled" ' + (s?.status==='cancelled'?'selected':'') + '>Отменён</option>' +
+                '<option value="no_show" ' + (s?.status==='no_show'?'selected':'') + '>Не явился</option>' +
+            '</select></div>' +
+            '<div class="form-row" style="grid-column:1/-1"><label>Комментарий</label><textarea id="sc-comment" rows="2">' + escapeHtml(s?.comment||'') + '</textarea></div>' +
+        '</div>',
+        footer: '<button class="btn" data-cancel>Отмена</button><button class="btn btn-primary" data-save>Сохранить</button>'
+    });
+
+    $('[data-cancel]').onclick = closeModal;
+    $('[data-save]').onclick = async () => {
+        const name = $('#sc-name').value.trim();
+        if (!name) return toast('Укажите имя кандидата','warning');
+        const date = $('#sc-date').value;
+        if (!date) return toast('Укажите дату','warning');
+        const payload = {
+            candidate_name: name,
+            discord: $('#sc-discord').value.trim() || null,
+            game_nick: $('#sc-game').value.trim() || null,
+            age: parseInt($('#sc-age').value) || null,
+            timezone: $('#sc-tz').value.trim() || null,
+            scheduled_date: date,
+            scheduled_time: $('#sc-time').value || null,
+            interviewer_id: $('#sc-interviewer').value || null,
+            trainer_admin_id: $('#sc-trainer').value || null,
+            priority: $('#sc-priority').value || 'normal',
+            status: $('#sc-status').value || 'planned',
+            comment: $('#sc-comment').value.trim() || null
+        };
+        try {
+            if (isNew) { await createScheduledCall(payload); }
+            else { await updateScheduledCall(s.id, payload); }
+            closeModal(); toast('Сохранено','success'); onSave();
+        } catch(er) { toast('Ошибка: '+er.message,'danger'); }
+    };
 }
 
 // =====================================================================

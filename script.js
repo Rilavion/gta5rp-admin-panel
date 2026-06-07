@@ -24,8 +24,93 @@ const State = {
         rolePermissions: []
     },
     currentCsvRows: null,
-    currentCsvName: 'export.csv'
+    currentCsvName: 'export.csv',
+    cacheTime: {},       // timestamps when cache was last loaded
+    dirty: new Set()     // which caches need refresh
 };
+
+const CACHE_TTL = 120000; // 2 minutes - don't re-fetch if fresh
+
+function isCacheFresh(key) {
+    const t = State.cacheTime[key];
+    return t && (Date.now() - t) < CACHE_TTL;
+}
+
+function markCacheFresh(key) {
+    State.cacheTime[key] = Date.now();
+    State.dirty.delete(key);
+}
+
+function invalidateCache(key) {
+    State.dirty.add(key);
+    delete State.cacheTime[key];
+}
+
+// Cached loaders - return cache if fresh, else load from DB
+async function cachedLoadAdmins(includeInactive) {
+    const key = 'admins' + (includeInactive ? '_all' : '_active');
+    if (isCacheFresh(key) && State.cache.admins.length) return State.cache.admins;
+    const data = await loadAdmins(includeInactive);
+    State.cache.admins = data;
+    markCacheFresh(key);
+    return data;
+}
+async function cachedLoadCalls() {
+    if (isCacheFresh('calls') && State.cache.calls.length) return State.cache.calls;
+    const data = await loadCallHistory();
+    State.cache.calls = data;
+    markCacheFresh('calls');
+    return data;
+}
+async function cachedLoadDiscipline() {
+    if (isCacheFresh('discipline')) return State.cache.discipline;
+    const data = await loadDisciplineRecords();
+    State.cache.discipline = data;
+    markCacheFresh('discipline');
+    return data;
+}
+async function cachedLoadDepartments() {
+    if (isCacheFresh('departments')) return State.cache.departments;
+    const data = await loadDepartments();
+    State.cache.departments = data;
+    markCacheFresh('departments');
+    return data;
+}
+async function cachedLoadQuestions(onlyActive) {
+    if (isCacheFresh('questions') && State.cache.questions.length) return State.cache.questions;
+    const data = await loadQuestions(onlyActive);
+    State.cache.questions = data;
+    markCacheFresh('questions');
+    return data;
+}
+async function cachedLoadPayments() {
+    if (isCacheFresh('payments')) return State.cache.payments;
+    const data = await loadPayments();
+    State.cache.payments = data;
+    markCacheFresh('payments');
+    return data;
+}
+async function cachedLoadPromotionSettings() {
+    if (isCacheFresh('promotionSettings') && State.cache.promotionSettings.length) return State.cache.promotionSettings;
+    const data = await loadPromotionSettings();
+    State.cache.promotionSettings = data;
+    markCacheFresh('promotionSettings');
+    return data;
+}
+async function cachedLoadUsers() {
+    if (isCacheFresh('users')) return State.cache.users;
+    const data = await loadUsers();
+    State.cache.users = data;
+    markCacheFresh('users');
+    return data;
+}
+async function cachedLoadTariffs() {
+    if (isCacheFresh('tariffs')) return State.cache.tariffs;
+    const data = await loadTariffs();
+    State.cache.tariffs = data;
+    markCacheFresh('tariffs');
+    return data;
+}
 
 // ---------------------- Константы ----------------------
 const PASS_PERCENT = 70;
@@ -370,8 +455,14 @@ async function bootstrap() {
         showLogin();
     }
 
-    SB.client.auth.onAuthStateChange(async (event) => {
-        if (event === 'SIGNED_OUT') { showLogin(); }
+    SB.client.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_OUT') {
+            showLogin();
+        } else if (event === 'TOKEN_REFRESHED') {
+            // Token refreshed silently - do NOT reload page or reset forms
+            console.log('[LiveRP] Token refreshed silently');
+        }
+        // SIGNED_IN during bootstrap is handled by tryEnterApp, ignore here
     });
 }
 
@@ -426,7 +517,7 @@ function bindGlobal() {
         showLogin();
     });
 
-    $('#btn-refresh').addEventListener('click', () => { handleRoute(true); toast('Данные обновлены','success'); });
+    $('#btn-refresh').addEventListener('click', () => { State.cacheTime = {}; handleRoute(true); toast('Данные обновлены','success'); });
 
     // Export/import доступны через раздел Настройки
     $('#file-import').addEventListener('change', async (e) => {
@@ -487,6 +578,20 @@ function applyRouteVisibility() {
 async function handleRoute(force=false) {
     const hash = (location.hash || '#dashboard').replace('#','');
     const route = ROUTES[hash] ? hash : 'dashboard';
+
+    // Don't reload calls page if user is filling a form
+    if (State.route === 'calls' && route === 'calls' && !force) {
+        const nameField = $('#c-name');
+        if (nameField && nameField.value.trim()) {
+            return; // Don't destroy form data
+        }
+    }
+
+    // Force = clear all caches
+    if (force) {
+        State.cacheTime = {};
+    }
+
     State.route = route;
 
     $$('#sidebar-nav .nav-link').forEach(a => a.classList.toggle('active', a.dataset.route === route));
@@ -532,8 +637,8 @@ async function handleRoute(force=false) {
 // =====================================================================
 async function renderDashboard(view) {
     const [calls, discipline, admins, settings, payments] = await Promise.all([
-        loadCallHistory(), loadDisciplineRecords(),
-        loadAdmins(), loadPromotionSettings(), loadPayments()
+        cachedLoadCalls(), cachedLoadDiscipline(),
+        cachedLoadAdmins(), cachedLoadPromotionSettings(), cachedLoadPayments()
     ]);
     State.cache.calls = calls;
     State.cache.discipline = discipline;
@@ -672,7 +777,7 @@ function punishLabel(t) {
 // =====================================================================
 async function renderScheduled(view) {
     if (!hasRole('owner','admin','interviewer')) { view.innerHTML = '<div class="empty">Нет доступа</div>'; return; }
-    const [scheduled, admins, users] = await Promise.all([loadScheduledCalls(), loadAdmins(false), loadUsers()]);
+    const [scheduled, admins, users] = await Promise.all([loadScheduledCalls(), cachedLoadAdmins(false), cachedLoadUsers()]);
     State.cache.scheduledCalls = scheduled;
     const canEdit = hasRole('owner','admin','interviewer');
 
@@ -876,7 +981,7 @@ async function renderCalls(view) {
     if (!hasRole('owner','admin','interviewer')) {
         view.innerHTML = `<div class="empty">Нет доступа</div>`; return;
     }
-    const [questions, admins] = await Promise.all([loadQuestions(true), loadAdmins(false)]);
+    const [questions, admins] = await Promise.all([cachedLoadQuestions(true), cachedLoadAdmins(false)]);
     State.cache.questions = questions;
     State.cache.admins = admins;
 
@@ -1049,6 +1154,7 @@ async function saveCallSessionAction(mode) {
             comment: $('#c-comment').value.trim() || null,
             extra_comment: $('#c-extra').value.trim() || null
         }, answers);
+        invalidateCache('calls');
         toast(`Обзвон сохранён (${pct}%, ${finalStatus})`,'success');
         handleRoute(true);
     } catch (e) {
@@ -1061,7 +1167,7 @@ async function saveCallSessionAction(mode) {
 // 6. Конструктор вопросов
 // =====================================================================
 async function renderQuestions(view) {
-    const list = await loadQuestions(false);
+    const list = await cachedLoadQuestions(false);
     State.cache.questions = list;
     const cats = [...new Set(list.map(q => q.category))].sort();
     const canEdit = hasRole('owner','admin');
@@ -1251,8 +1357,7 @@ function editQuestionModal(q, onSave) {
 // 7. История обзвонов
 // =====================================================================
 async function renderHistory(view) {
-    const calls = await loadCallHistory();
-    State.cache.calls = calls;
+    const calls = await cachedLoadCalls();
     const interviewers = [...new Map(calls.filter(c=>c.interviewer).map(c => [c.interviewer.id, c.interviewer])).values()];
 
     view.innerHTML = `
@@ -1433,7 +1538,7 @@ async function showCallDetails(c) {
 // 8. Статистика
 // =====================================================================
 async function renderStats(view) {
-    const [calls, admins] = await Promise.all([loadCallHistory(), loadAdmins()]);
+    const [calls, admins] = await Promise.all([cachedLoadCalls(), cachedLoadAdmins()]);
     State.cache.calls = calls;
     const total = calls.length;
     const passed = calls.filter(c => c.status === 'passed').length;
@@ -1503,7 +1608,7 @@ async function renderStats(view) {
 // =====================================================================
 async function renderUsers(view) {
     if (!hasRole('owner','admin')) { view.innerHTML = `<div class="empty">Нет доступа</div>`; return; }
-    const [users, admins] = await Promise.all([loadUsers(), loadAdmins()]);
+    const [users, admins] = await Promise.all([cachedLoadUsers(), cachedLoadAdmins()]);
     State.cache.users = users; State.cache.admins = admins;
     const canManageUsers = hasRole('owner');
 
@@ -1611,7 +1716,7 @@ function userProfileModal(u, admins, onSave) {
 // =====================================================================
 async function renderDepartments(view) {
     const [departments, admins, calls, discipline] = await Promise.all([
-        loadDepartments(), loadAdmins(true), loadCallHistory(), loadDisciplineRecords()
+        cachedLoadDepartments(), cachedLoadAdmins(true), cachedLoadCalls(), cachedLoadDiscipline()
     ]);
     const canEdit = hasRole('owner');
     const all = getDepartmentsFromAdmins(admins, departments);
@@ -1732,7 +1837,7 @@ function departmentModal(dep, onSave) {
 // =====================================================================
 async function renderAdmins(view) {
     const [admins, calls, discipline, departments] = await Promise.all([
-        loadAdmins(true), loadCallHistory(), loadDisciplineRecords(), loadDepartments()
+        cachedLoadAdmins(true), cachedLoadCalls(), cachedLoadDiscipline(), cachedLoadDepartments()
     ]);
     State.cache.admins = admins; State.cache.calls = calls; State.cache.discipline = discipline; State.cache.departments = departments;
     const canEdit = hasRole('owner','admin');
@@ -1908,7 +2013,7 @@ function showAdminCard(a, calls, discipline) {
 // 11. Руководство
 // =====================================================================
 async function renderLeadership(view) {
-    const [admins, discipline, calls] = await Promise.all([loadAdmins(false), loadDisciplineRecords(), loadCallHistory()]);
+    const [admins, discipline, calls] = await Promise.all([cachedLoadAdmins(false), cachedLoadDiscipline(), cachedLoadCalls()]);
     const leaders = admins
         .filter(a => a.is_leadership || Number(a.rank) >= 9 || /руковод|глав|куратор|owner|директор/i.test(`${a.custom_position||''} ${a.current_position||''}`))
         .sort((a,b) => (Number(b.rank)||0) - (Number(a.rank)||0));
@@ -1943,7 +2048,7 @@ async function renderLeadership(view) {
 // 12. Дисциплинарные наказания
 // =====================================================================
 async function renderDiscipline(view) {
-    const [records, admins] = await Promise.all([loadDisciplineRecords(), loadAdmins()]);
+    const [records, admins] = await Promise.all([cachedLoadDiscipline(), cachedLoadAdmins()]);
     State.cache.discipline = records; State.cache.admins = admins;
     const canEdit = hasRole('owner','admin');
 
@@ -2049,7 +2154,7 @@ async function renderDiscipline(view) {
 // =====================================================================
 async function renderPromotion(view) {
     const [admins, departments, settings, calls, discipline] = await Promise.all([
-        loadAdmins(false), loadDepartments(), loadPromotionSettings(), loadCallHistory(), loadDisciplineRecords()
+        cachedLoadAdmins(false), cachedLoadDepartments(), cachedLoadPromotionSettings(), cachedLoadCalls(), cachedLoadDiscipline()
     ]);
     State.cache.admins = admins; State.cache.promotionSettings = settings;
     const readiness = await calculatePromotionReadiness(admins, settings, calls, discipline);
@@ -2178,7 +2283,7 @@ async function changeAdminRank(admin, newRank, customPosition, comment, directio
 // =====================================================================
 async function renderPromotionSettings(view) {
     if (!hasRole('owner','admin')) { view.innerHTML = `<div class="empty">Нет доступа</div>`; return; }
-    const settings = await loadPromotionSettings();
+    const settings = await cachedLoadPromotionSettings();
 
     view.innerHTML = `
         <h2>Настройки повышения</h2>
@@ -2244,7 +2349,7 @@ function promoSetModal(s, onSave) {
 // 15. Выплаты
 // =====================================================================
 async function renderPayments(view) {
-    const [payments, admins, tariffs] = await Promise.all([loadPayments(), loadAdmins(false), loadTariffs()]);
+    const [payments, admins, tariffs] = await Promise.all([cachedLoadPayments(), cachedLoadAdmins(false), cachedLoadTariffs()]);
     State.cache.tariffs = tariffs;
     State.cache.payments = payments;
     const canEdit = hasRole('owner','admin');
@@ -2349,7 +2454,7 @@ function activityLabel(t) {
 async function renderArchive(view) {
     if (!hasRole('owner','admin')) { view.innerHTML = `<div class="empty">Нет доступа</div>`; return; }
     const [admins, calls, discipline, questions, promotions, payments] = await Promise.all([
-        loadAdmins(true), loadCallHistory(), loadDisciplineRecords(), loadQuestions(false), loadPromotions(), loadPayments()
+        cachedLoadAdmins(true), cachedLoadCalls(), cachedLoadDiscipline(), cachedLoadQuestions(false), loadPromotions(), cachedLoadPayments()
     ]);
     const archAdmins = admins.filter(a => !a.is_active);
     const archProm = promotions.filter(p => p.status === 'rejected' || p.status === 'promoted');
@@ -2420,7 +2525,7 @@ async function renderArchive(view) {
 // Прайс-лист
 // =====================================================================
 async function renderPricelist(view) {
-    const tariffs = await loadTariffs();
+    const tariffs = await cachedLoadTariffs();
     State.cache.tariffs = tariffs;
     const canEdit = hasRole('owner') || hasPerm('can_edit_tariffs');
 

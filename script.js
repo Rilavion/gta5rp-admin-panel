@@ -18,11 +18,99 @@ const State = {
         promotions: [],
         payments: [],
         users: [],
-        departments: []
+        departments: [],
+        tariffs: [],
+        scheduledCalls: [],
+        rolePermissions: []
     },
     currentCsvRows: null,
-    currentCsvName: 'export.csv'
+    currentCsvName: 'export.csv',
+    cacheTime: {},       // timestamps when cache was last loaded
+    dirty: new Set()     // which caches need refresh
 };
+
+const CACHE_TTL = 120000; // 2 minutes - don't re-fetch if fresh
+
+function isCacheFresh(key) {
+    const t = State.cacheTime[key];
+    return t && (Date.now() - t) < CACHE_TTL;
+}
+
+function markCacheFresh(key) {
+    State.cacheTime[key] = Date.now();
+    State.dirty.delete(key);
+}
+
+function invalidateCache(key) {
+    State.dirty.add(key);
+    delete State.cacheTime[key];
+}
+
+// Cached loaders - return cache if fresh, else load from DB
+async function cachedLoadAdmins(includeInactive) {
+    const key = 'admins' + (includeInactive ? '_all' : '_active');
+    if (isCacheFresh(key) && State.cache.admins.length) return State.cache.admins;
+    const data = await loadAdmins(includeInactive);
+    State.cache.admins = data;
+    markCacheFresh(key);
+    return data;
+}
+async function cachedLoadCalls() {
+    if (isCacheFresh('calls') && State.cache.calls.length) return State.cache.calls;
+    const data = await loadCallHistory();
+    State.cache.calls = data;
+    markCacheFresh('calls');
+    return data;
+}
+async function cachedLoadDiscipline() {
+    if (isCacheFresh('discipline')) return State.cache.discipline;
+    const data = await loadDisciplineRecords();
+    State.cache.discipline = data;
+    markCacheFresh('discipline');
+    return data;
+}
+async function cachedLoadDepartments() {
+    if (isCacheFresh('departments')) return State.cache.departments;
+    const data = await loadDepartments();
+    State.cache.departments = data;
+    markCacheFresh('departments');
+    return data;
+}
+async function cachedLoadQuestions(onlyActive) {
+    if (isCacheFresh('questions') && State.cache.questions.length) return State.cache.questions;
+    const data = await loadQuestions(onlyActive);
+    State.cache.questions = data;
+    markCacheFresh('questions');
+    return data;
+}
+async function cachedLoadPayments() {
+    if (isCacheFresh('payments')) return State.cache.payments;
+    const data = await loadPayments();
+    State.cache.payments = data;
+    markCacheFresh('payments');
+    return data;
+}
+async function cachedLoadPromotionSettings() {
+    if (isCacheFresh('promotionSettings') && State.cache.promotionSettings.length) return State.cache.promotionSettings;
+    const data = await loadPromotionSettings();
+    State.cache.promotionSettings = data;
+    markCacheFresh('promotionSettings');
+    return data;
+}
+async function cachedLoadUsers() {
+    if (isCacheFresh('users')) return State.cache.users;
+    const data = await loadUsers();
+    State.cache.users = data;
+    markCacheFresh('users');
+    return data;
+}
+async function cachedLoadTariffs() {
+    if (isCacheFresh('tariffs')) return State.cache.tariffs;
+    const data = await loadTariffs();
+    State.cache.tariffs = data;
+    markCacheFresh('tariffs');
+    return data;
+}
 
 // ---------------------- Константы ----------------------
 const PASS_PERCENT = 70;
@@ -44,11 +132,7 @@ const DEFAULT_APPEARANCE = {
     density: 'comfortable'
 };
 
-const DEFAULT_DEPARTMENTS = [
-    { name: 'Общая администрация', show_calls: true, show_reports: true, show_trainings: true, show_activity: true, show_punishments: true, sort_order: 10 },
-    { name: 'Отдел набора', show_calls: true, show_reports: false, show_trainings: true, show_activity: true, show_punishments: true, sort_order: 20 },
-    { name: 'Руководство', show_calls: true, show_reports: true, show_trainings: true, show_activity: true, show_punishments: true, sort_order: 30 }
-];
+const DEFAULT_DEPARTMENTS = [];
 
 function normalizeDepartment(dep = {}) {
     return {
@@ -160,9 +244,44 @@ function normalizeAdminPayload(payload) {
     };
 }
 
+
+// Permission system cache
+let _permCache = null;
+
+async function loadPermCache() {
+    if (_permCache) return _permCache;
+    try {
+        const perms = await loadRolePermissions();
+        _permCache = {};
+        perms.forEach(p => _permCache[p.role_name] = p.permissions || {});
+        return _permCache;
+    } catch { return {}; }
+}
+
+function clearPermCache() { _permCache = null; }
+
+function hasPerm(perm) {
+    const role = SB.profile?.access_role;
+    if (!role) return false;
+    if (role === 'owner') return true;
+    if (!_permCache || !_permCache[role]) return false;
+    return !!_permCache[role][perm];
+}
+
+function canSeePage(page) {
+    const role = SB.profile?.access_role;
+    if (!role) return false;
+    if (role === 'owner') return true;
+    if (!_permCache || !_permCache[role]) return true; // fallback to ROUTES
+    const pages = _permCache[role].pages;
+    if (!pages) return true;
+    return pages.includes(page);
+}
+
 const ROUTES = {
     dashboard:     { title: 'Главная',                 roles: ['owner','admin','interviewer','viewer'] },
     calls:         { title: 'Обзвоны',                 roles: ['owner','admin','interviewer'] },
+    scheduled:     { title: 'Запланированные',         roles: ['owner','admin','interviewer'] },
     questions:     { title: 'Конструктор вопросов',    roles: ['owner','admin','interviewer','viewer'] },
     history:       { title: 'История обзвонов',        roles: ['owner','admin','interviewer','viewer'] },
     stats:         { title: 'Статистика',              roles: ['owner','admin','interviewer','viewer'] },
@@ -175,6 +294,8 @@ const ROUTES = {
     'promotion-set':{ title:'Настройки повышения',     roles: ['owner','admin'] },
     payments:      { title: 'Выплаты / донат',         roles: ['owner','admin','viewer'] },
     archive:       { title: 'Архив',                   roles: ['owner','admin'] },
+    pricelist:     { title: 'Прайс-лист',              roles: ['owner','admin','interviewer','viewer'] },
+    permissions:   { title: 'Права ролей',              roles: ['owner'] },
     settings:      { title: 'Настройки',               roles: ['owner','admin','interviewer','viewer'] }
 };
 
@@ -310,27 +431,82 @@ async function bootstrap() {
     applyAppearanceSettings();
     initSupabase();
 
+    // Привязываем обработчики СРАЗУ, до проверки сессии
+    setInterval(tickClock, 1000);
+    tickClock();
+    bindGlobal();
+
     if (!SB.client) {
         showLogin();
         $('#login-error').textContent = 'Supabase не настроен. Откройте supabase.js и впишите URL/anon key.';
         return;
     }
 
-    const session = await SB.client.auth.getSession();
-    if (session?.data?.session) {
-        const ok = await tryEnterApp();
-        if (!ok) showLogin();
-    } else {
+    try {
+        const session = await SB.client.auth.getSession();
+        if (session?.data?.session) {
+            const ok = await tryEnterApp();
+            if (!ok) showLogin();
+        } else {
+            showLogin();
+        }
+    } catch (e) {
+        console.error('Bootstrap error:', e);
         showLogin();
     }
 
-    SB.client.auth.onAuthStateChange(async (event) => {
-        if (event === 'SIGNED_OUT') { showLogin(); }
+    SB.client.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_OUT') {
+            showLogin();
+        } else if (event === 'TOKEN_REFRESHED') {
+            console.log('[LiveRP] Token refreshed silently');
+        }
     });
 
-    setInterval(tickClock, 1000);
-    tickClock();
-    bindGlobal();
+    // =================== Call Form Auto-Save ===================
+    // Save call form data every 20 seconds
+    setInterval(() => {
+        if (State.route !== 'calls') return;
+        const nameEl = document.getElementById('c-name');
+        if (!nameEl || !nameEl.value.trim()) return;
+        const backup = {
+            ts: Date.now(),
+            userId: State.user?.id || 'unknown',
+            name: nameEl.value,
+            discord: document.getElementById('c-discord')?.value || '',
+            game: document.getElementById('c-game')?.value || '',
+            age: document.getElementById('c-age')?.value || '',
+            tz: document.getElementById('c-tz')?.value || '',
+            date: document.getElementById('c-date')?.value || '',
+            trainer: document.getElementById('c-trainer')?.value || '',
+            replayCall: document.getElementById('c-replay-call')?.value || '',
+            replayTrain: document.getElementById('c-replay-train')?.value || '',
+            comment: document.getElementById('c-comment')?.value || '',
+            extra: document.getElementById('c-extra')?.value || '',
+            answers: {}
+        };
+        document.querySelectorAll('.q-item').forEach(item => {
+            const sel = item.querySelector('.q-opt.sel-1, .q-opt.sel-h, .q-opt.sel-0');
+            if (sel) backup.answers[item.dataset.qid] = parseFloat(sel.dataset.score);
+            const cm = item.querySelector('[data-q-comment]');
+            if (cm && cm.value) backup.answers[item.dataset.qid + '_c'] = cm.value;
+        });
+        try { localStorage.setItem('liverpCallBackup_' + backup.userId, JSON.stringify(backup)); } catch {}
+    }, 20000);
+
+    // Keep session alive: ping Supabase every 5 min to prevent token/DB sleep issues
+    setInterval(async () => {
+        try {
+            const { data } = await SB.client.auth.getSession();
+            if (!data?.session) {
+                console.warn('[LiveRP] Session lost, refreshing...');
+                const { error } = await SB.client.auth.refreshSession();
+                if (error) console.error('[LiveRP] Session refresh failed:', error.message);
+            }
+        } catch (e) {
+            console.warn('[LiveRP] Keep-alive ping failed:', e.message);
+        }
+    }, 300000); // 5 minutes
 }
 
 function showLogin() {
@@ -339,9 +515,12 @@ function showLogin() {
 }
 
 async function tryEnterApp() {
+    console.log('[LiveRP] tryEnterApp: checking auth...');
     const r = await requireAuth();
+    console.log('[LiveRP] requireAuth result:', r ? 'OK' : 'NULL', r?.profile?.access_role);
+    if (r) await loadPermCache();
     if (!r) {
-        toast('Аккаунт неактивен или нет профиля. Обратитесь к owner.', 'danger', 6000);
+        toast('Не удалось авторизоваться. Откройте консоль (F12) для деталей.', 'danger', 8000);
         return false;
     }
     State.user = r.user;
@@ -365,8 +544,9 @@ function bindGlobal() {
         try {
             await login(email, pwd);
             const ok = await tryEnterApp();
-            if (!ok) { await logout(); err.textContent = 'Профиль не активен.'; }
+            if (!ok) { await logout(); err.textContent = 'Не удалось загрузить профиль. Проверьте RLS и user_profiles в Supabase.'; }
         } catch (e) {
+            console.error('Login error:', e);
             err.textContent = e.message || 'Ошибка входа';
         } finally {
             $('#login-btn').disabled = false;
@@ -380,24 +560,11 @@ function bindGlobal() {
         showLogin();
     });
 
-    $('#btn-refresh').addEventListener('click', () => { handleRoute(true); toast('Данные обновлены','success'); });
+    $('#btn-refresh').addEventListener('click', () => { State.cacheTime = {}; handleRoute(true); toast('Данные обновлены','success'); });
 
-    $('#btn-export-json').addEventListener('click', async () => {
-        if (!hasRole('owner','admin')) return toast('Недостаточно прав','danger');
-        toast('Готовим экспорт...');
-        try {
-            const dump = await exportData();
-            const name = `liverp-admin-dump-${new Date().toISOString().slice(0,10)}.json`;
-            downloadFile(name, JSON.stringify(dump, null, 2), 'application/json');
-            toast('JSON экспортирован','success');
-        } catch (e) { toast('Ошибка экспорта: '+e.message,'danger'); }
-    });
-
-    $('#btn-import-json').addEventListener('click', () => {
-        if (!hasRole('owner')) return toast('Только owner может импортировать','danger');
-        $('#file-import').click();
-    });
-    $('#file-import').addEventListener('change', async (e) => {
+    // Export/import доступны через раздел Настройки
+    const fileImport = $('#file-import');
+    if (fileImport) fileImport.addEventListener('change', async (e) => {
         const file = e.target.files?.[0]; if (!file) return;
         try {
             const text = await file.text();
@@ -408,10 +575,6 @@ function bindGlobal() {
             handleRoute(true);
         } catch (err) { toast('Ошибка импорта: '+err.message,'danger'); }
         e.target.value = '';
-    });
-
-    $('#btn-export-csv').addEventListener('click', () => {
-        exportRowsCsv(State.currentCsvRows || [], State.currentCsvName);
     });
 
     $('#sidebar-nav').addEventListener('click', (e) => {
@@ -443,9 +606,12 @@ function renderTopbarMeta() {
 function applyRouteVisibility() {
     const role = State.profile?.access_role || 'viewer';
     $$('#sidebar-nav .nav-link').forEach(a => {
-        const r = ROUTES[a.dataset.route];
+        const route = a.dataset.route;
+        const r = ROUTES[route];
         if (!r) return;
-        if (r.roles.includes(role)) a.classList.remove('disabled');
+        const baseAccess = r.roles.includes(role);
+        const permAccess = canSeePage(route);
+        if (baseAccess && permAccess) a.classList.remove('disabled');
         else a.classList.add('disabled');
     });
 }
@@ -456,6 +622,21 @@ function applyRouteVisibility() {
 async function handleRoute(force=false) {
     const hash = (location.hash || '#dashboard').replace('#','');
     const route = ROUTES[hash] ? hash : 'dashboard';
+    console.log('[LiveRP] handleRoute:', route, 'force:', force, 'current:', State.route);
+
+    // Don't reload calls page if user is filling a form
+    if (State.route === 'calls' && route === 'calls' && !force) {
+        const nameField = document.getElementById('c-name');
+        if (nameField && nameField.value.trim()) {
+            return; // Protect form data
+        }
+    }
+
+    // Force = clear all caches
+    if (force) {
+        State.cacheTime = {};
+    }
+
     State.route = route;
 
     $$('#sidebar-nav .nav-link').forEach(a => a.classList.toggle('active', a.dataset.route === route));
@@ -473,6 +654,7 @@ async function handleRoute(force=false) {
         switch (route) {
             case 'dashboard':     return await renderDashboard(view);
             case 'calls':         return await renderCalls(view);
+            case 'scheduled':     return await renderScheduled(view);
             case 'questions':     return await renderQuestions(view);
             case 'history':       return await renderHistory(view);
             case 'stats':         return await renderStats(view);
@@ -485,6 +667,8 @@ async function handleRoute(force=false) {
             case 'promotion-set': return await renderPromotionSettings(view);
             case 'payments':      return await renderPayments(view);
             case 'archive':       return await renderArchive(view);
+            case 'pricelist':     return await renderPricelist(view);
+            case 'permissions':   return await renderPermissions(view);
             case 'settings':      return await renderSettings(view);
         }
     } catch (e) {
@@ -498,8 +682,8 @@ async function handleRoute(force=false) {
 // =====================================================================
 async function renderDashboard(view) {
     const [calls, discipline, admins, settings, payments] = await Promise.all([
-        loadCallHistory(), loadDisciplineRecords(),
-        loadAdmins(), loadPromotionSettings(), loadPayments()
+        cachedLoadCalls(), cachedLoadDiscipline(),
+        cachedLoadAdmins(), cachedLoadPromotionSettings(), cachedLoadPayments()
     ]);
     State.cache.calls = calls;
     State.cache.discipline = discipline;
@@ -539,12 +723,7 @@ async function renderDashboard(view) {
     const interviewerRank = Object.values(interviewMap).sort((a,b)=>b.count-a.count).slice(0,5);
 
     view.innerHTML = `
-        <div class="liverp-hero">
-            <div>
-                <h2>Центр управления администрацией</h2>
-                <p class="muted">Сводка по обзвонам, составу, наказаниям, повышениям и выплатам</p>
-            </div>
-        </div>
+        <h2>Главная</h2>
         <div class="cards">
             <div class="card accent">  <div class="card-label">Всего обзвонов</div><div class="card-value">${total}</div></div>
             <div class="card success"> <div class="card-label">Прошло</div><div class="card-value">${passed}</div></div>
@@ -637,6 +816,209 @@ function punishLabel(t) {
     })[t] || t || '—';
 }
 
+
+// =====================================================================
+// Запланированные обзвоны
+// =====================================================================
+async function renderScheduled(view) {
+    if (!hasRole('owner','admin','interviewer')) { view.innerHTML = '<div class="empty">Нет доступа</div>'; return; }
+    const [scheduled, admins, users] = await Promise.all([loadScheduledCalls(), cachedLoadAdmins(false), cachedLoadUsers()]);
+    State.cache.scheduledCalls = scheduled;
+    const canEdit = hasRole('owner','admin','interviewer');
+
+    const today = new Date().toISOString().slice(0,10);
+    const planned = scheduled.filter(s => s.status === 'planned' || s.status === 'confirmed');
+    const todayList = planned.filter(s => s.scheduled_date === today);
+    const upcoming = planned.filter(s => s.scheduled_date > today);
+    const past = scheduled.filter(s => s.status === 'completed' || s.status === 'cancelled' || s.status === 'no_show');
+
+    const statusLabel = (s) => ({
+        planned: '<span class="badge accent">Запланирован</span>',
+        confirmed: '<span class="badge success">Подтверждён</span>',
+        in_progress: '<span class="badge warning">Идёт</span>',
+        completed: '<span class="badge success">Завершён</span>',
+        cancelled: '<span class="badge neutral">Отменён</span>',
+        no_show: '<span class="badge danger">Не явился</span>'
+    })[s] || '<span class="badge neutral">' + escapeHtml(s) + '</span>';
+
+    const priorityLabel = (p) => ({
+        low: '<span class="badge neutral">Низкий</span>',
+        normal: '',
+        high: '<span class="badge warning">Высокий</span>',
+        urgent: '<span class="badge danger">Срочный</span>'
+    })[p] || '';
+
+    const renderTable = (rows, id) => {
+        if (!rows.length) return '<div class="empty" style="margin:10px 0">Нет записей</div>';
+        return '<div class="table-wrap"><table class="data" id="' + id + '"><thead><tr>' +
+            '<th>Дата</th><th>Время</th><th>Кандидат</th><th>Discord</th><th>Проводит</th>' +
+            '<th>Приоритет</th><th>Статус</th><th>Комментарий</th>' +
+            (canEdit ? '<th style="width:180px">Действия</th>' : '') +
+        '</tr></thead><tbody>' +
+        rows.map(s =>
+            '<tr data-id="' + s.id + '">' +
+            '<td>' + fmtDate(s.scheduled_date) + '</td>' +
+            '<td>' + escapeHtml(s.scheduled_time||'—') + '</td>' +
+            '<td><b>' + escapeHtml(s.candidate_name) + '</b></td>' +
+            '<td>' + escapeHtml(s.discord||'—') + '</td>' +
+            '<td>' + escapeHtml(s.interviewer?.display_name || s.interviewer?.email || '—') + '</td>' +
+            '<td>' + priorityLabel(s.priority) + '</td>' +
+            '<td>' + statusLabel(s.status) + '</td>' +
+            '<td>' + escapeHtml((s.comment||'').slice(0,40)) + '</td>' +
+            (canEdit ? '<td class="actions">' +
+                '<button class="btn btn-sm" data-act="edit">✎</button>' +
+                '<button class="btn btn-sm btn-success" data-act="start">📞</button>' +
+                '<button class="btn btn-sm btn-danger" data-act="del">🗑</button>' +
+            '</td>' : '') +
+            '</tr>'
+        ).join('') +
+        '</tbody></table></div>';
+    };
+
+    view.innerHTML =
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">' +
+            '<h2 style="margin:0">📅 Запланированные обзвоны</h2>' +
+            (canEdit ? '<button class="btn btn-primary" id="btn-add-scheduled">+ Запланировать</button>' : '') +
+        '</div>' +
+        '<div class="cards">' +
+            '<div class="card accent"><div class="card-label">Сегодня</div><div class="card-value">' + todayList.length + '</div></div>' +
+            '<div class="card"><div class="card-label">Предстоящие</div><div class="card-value">' + upcoming.length + '</div></div>' +
+            '<div class="card success"><div class="card-label">Всего запланировано</div><div class="card-value">' + planned.length + '</div></div>' +
+            '<div class="card neutral"><div class="card-label">Завершено / отменено</div><div class="card-value">' + past.length + '</div></div>' +
+        '</div>' +
+        (todayList.length ? '<div class="panel"><div class="panel-header"><h3>Сегодня (' + today + ')</h3></div>' + renderTable(todayList, 'sc-today') + '</div>' : '') +
+        '<div class="panel"><div class="panel-header"><h3>Предстоящие</h3></div>' + renderTable(upcoming, 'sc-upcoming') + '</div>' +
+        '<div class="panel"><div class="panel-header"><h3>Все записи</h3></div>' +
+            '<div class="toolbar">' +
+                '<select id="sc-filter-status"><option value="">Все статусы</option><option value="planned">Запланирован</option><option value="confirmed">Подтверждён</option><option value="completed">Завершён</option><option value="cancelled">Отменён</option><option value="no_show">Не явился</option></select>' +
+                '<input id="sc-search" placeholder="Поиск по имени..."/>' +
+            '</div>' +
+            '<div id="sc-all-table"></div>' +
+        '</div>';
+
+    // Filter & render all table
+    const renderAll = () => {
+        const st = ($('#sc-filter-status')?.value || '');
+        const q = ($('#sc-search')?.value || '').toLowerCase();
+        let rows = scheduled.filter(s => {
+            if (st && s.status !== st) return false;
+            if (q && !s.candidate_name.toLowerCase().includes(q) && !(s.discord||'').toLowerCase().includes(q)) return false;
+            return true;
+        });
+        $('#sc-all-table').innerHTML = renderTable(rows, 'sc-filtered');
+        bindTableActions($('#sc-filtered'));
+    };
+
+    const sFilter = $('#sc-filter-status');
+    const sSearch = $('#sc-search');
+    if (sFilter) sFilter.onchange = renderAll;
+    if (sSearch) sSearch.oninput = renderAll;
+
+    // Bind actions
+    function bindTableActions(table) {
+        if (!table) return;
+        table.querySelector('tbody')?.addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-act]'); if (!btn) return;
+            const id = btn.closest('tr').dataset.id;
+            const s = scheduled.find(x => x.id === id); if (!s) return;
+            if (btn.dataset.act === 'edit') {
+                scheduledModal(s, admins, users, () => handleRoute(true));
+            } else if (btn.dataset.act === 'start') {
+                // Go to calls page with pre-filled data
+                location.hash = '#calls';
+                setTimeout(() => {
+                    const nameEl = $('#c-name'); if (nameEl) nameEl.value = s.candidate_name;
+                    const discEl = $('#c-discord'); if (discEl) discEl.value = s.discord || '';
+                    const gameEl = $('#c-game'); if (gameEl) gameEl.value = s.game_nick || '';
+                    const ageEl = $('#c-age'); if (ageEl) ageEl.value = s.age || '';
+                    const tzEl = $('#c-tz'); if (tzEl) tzEl.value = s.timezone || '';
+                    const trainerEl = $('#c-trainer'); if (trainerEl && s.trainer_admin_id) trainerEl.value = s.trainer_admin_id;
+                    // Mark as in_progress
+                    updateScheduledCall(s.id, { status: 'in_progress' }).catch(() => {});
+                }, 500);
+            } else if (btn.dataset.act === 'del') {
+                if (!await confirmDialog('Удалить запланированный обзвон ' + s.candidate_name + '?')) return;
+                try { await deleteScheduledCall(id); scheduled.splice(scheduled.indexOf(s), 1); renderAll(); toast('Удалено','success'); handleRoute(true); }
+                catch(er) { toast('Ошибка: '+er.message,'danger'); }
+            }
+        });
+    }
+
+    // Bind all visible tables
+    ['sc-today','sc-upcoming'].forEach(id => bindTableActions($('#' + id)));
+    renderAll();
+
+    // Add button
+    const addBtn = $('#btn-add-scheduled');
+    if (addBtn) addBtn.onclick = () => scheduledModal(null, admins, users, () => handleRoute(true));
+}
+
+function scheduledModal(s, admins, users, onSave) {
+    const isNew = !s;
+    const interviewers = users.filter(u => u.is_active && ['owner','admin','interviewer'].includes(u.access_role));
+
+    openModal({
+        title: isNew ? 'Запланировать обзвон' : 'Редактирование',
+        body: '<div class="form-grid">' +
+            '<div class="form-row"><label>Имя / ник кандидата *</label><input id="sc-name" value="' + escapeHtml(s?.candidate_name||'') + '"/></div>' +
+            '<div class="form-row"><label>Discord</label><input id="sc-discord" value="' + escapeHtml(s?.discord||'') + '"/></div>' +
+            '<div class="form-row"><label>Игровой ник</label><input id="sc-game" value="' + escapeHtml(s?.game_nick||'') + '"/></div>' +
+            '<div class="form-row"><label>Возраст</label><input id="sc-age" type="number" value="' + (s?.age||'') + '"/></div>' +
+            '<div class="form-row"><label>Часовой пояс</label><input id="sc-tz" value="' + escapeHtml(s?.timezone||'') + '" placeholder="UTC+3"/></div>' +
+            '<div class="form-row"><label>Дата *</label><input id="sc-date" type="date" value="' + (s?.scheduled_date || new Date().toISOString().slice(0,10)) + '"/></div>' +
+            '<div class="form-row"><label>Время</label><input id="sc-time" type="time" value="' + escapeHtml(s?.scheduled_time||'') + '"/></div>' +
+            '<div class="form-row"><label>Проводит обзвон</label><select id="sc-interviewer"><option value="">— не назначен —</option>' +
+                interviewers.map(u => '<option value="' + u.id + '" ' + (s?.interviewer_id===u.id?'selected':'') + '>' + escapeHtml(u.display_name || u.email) + '</option>').join('') +
+            '</select></div>' +
+            '<div class="form-row"><label>Обучение проводил</label><select id="sc-trainer"><option value="">— не выбрано —</option>' +
+                admins.map(a => '<option value="' + a.id + '" ' + (s?.trainer_admin_id===a.id?'selected':'') + '>' + escapeHtml(adminShortLabel(a)) + '</option>').join('') +
+            '</select></div>' +
+            '<div class="form-row"><label>Приоритет</label><select id="sc-priority">' +
+                '<option value="low" ' + (s?.priority==='low'?'selected':'') + '>Низкий</option>' +
+                '<option value="normal" ' + (s?.priority==='normal'||!s?.priority?'selected':'') + '>Обычный</option>' +
+                '<option value="high" ' + (s?.priority==='high'?'selected':'') + '>Высокий</option>' +
+                '<option value="urgent" ' + (s?.priority==='urgent'?'selected':'') + '>Срочный</option>' +
+            '</select></div>' +
+            '<div class="form-row"><label>Статус</label><select id="sc-status">' +
+                '<option value="planned" ' + (s?.status==='planned'||!s?.status?'selected':'') + '>Запланирован</option>' +
+                '<option value="confirmed" ' + (s?.status==='confirmed'?'selected':'') + '>Подтверждён</option>' +
+                '<option value="completed" ' + (s?.status==='completed'?'selected':'') + '>Завершён</option>' +
+                '<option value="cancelled" ' + (s?.status==='cancelled'?'selected':'') + '>Отменён</option>' +
+                '<option value="no_show" ' + (s?.status==='no_show'?'selected':'') + '>Не явился</option>' +
+            '</select></div>' +
+            '<div class="form-row" style="grid-column:1/-1"><label>Комментарий</label><textarea id="sc-comment" rows="2">' + escapeHtml(s?.comment||'') + '</textarea></div>' +
+        '</div>',
+        footer: '<button class="btn" data-cancel>Отмена</button><button class="btn btn-primary" data-save>Сохранить</button>'
+    });
+
+    $('[data-cancel]').onclick = closeModal;
+    $('[data-save]').onclick = async () => {
+        const name = $('#sc-name').value.trim();
+        if (!name) return toast('Укажите имя кандидата','warning');
+        const date = $('#sc-date').value;
+        if (!date) return toast('Укажите дату','warning');
+        const payload = {
+            candidate_name: name,
+            discord: $('#sc-discord').value.trim() || null,
+            game_nick: $('#sc-game').value.trim() || null,
+            age: parseInt($('#sc-age').value) || null,
+            timezone: $('#sc-tz').value.trim() || null,
+            scheduled_date: date,
+            scheduled_time: $('#sc-time').value || null,
+            interviewer_id: $('#sc-interviewer').value || null,
+            trainer_admin_id: $('#sc-trainer').value || null,
+            priority: $('#sc-priority').value || 'normal',
+            status: $('#sc-status').value || 'planned',
+            comment: $('#sc-comment').value.trim() || null
+        };
+        try {
+            if (isNew) { await createScheduledCall(payload); }
+            else { await updateScheduledCall(s.id, payload); }
+            closeModal(); toast('Сохранено','success'); onSave();
+        } catch(er) { toast('Ошибка: '+er.message,'danger'); }
+    };
+}
+
 // =====================================================================
 // 5. Обзвоны
 // =====================================================================
@@ -644,7 +1026,7 @@ async function renderCalls(view) {
     if (!hasRole('owner','admin','interviewer')) {
         view.innerHTML = `<div class="empty">Нет доступа</div>`; return;
     }
-    const [questions, admins] = await Promise.all([loadQuestions(true), loadAdmins(false)]);
+    const [questions, admins] = await Promise.all([cachedLoadQuestions(true), cachedLoadAdmins(false)]);
     State.cache.questions = questions;
     State.cache.admins = admins;
 
@@ -697,6 +1079,7 @@ async function renderCalls(view) {
                         <div class="q-item" data-qid="${q.id}">
                             <div>
                                 <div class="q-text">${escapeHtml(q.question_text)}</div>
+                                ${q.answer_hint ? `<div class="q-hint" style="margin-top:4px;font-size:12px;color:var(--text-muted);font-style:italic;cursor:pointer" onclick="this.classList.toggle('open')" title="Нажмите чтобы показать/скрыть ответ"><span class="q-hint-label">💡 Показать ответ</span><span class="q-hint-text" style="display:none;color:var(--success);font-style:normal"> ${escapeHtml(q.answer_hint)}</span></div>` : ''}
                                 <div class="q-comment"><input data-q-comment placeholder="Комментарий (необязательно)"/></div>
                             </div>
                             <div class="q-options">
@@ -752,10 +1135,53 @@ async function renderCalls(view) {
         view.querySelectorAll('.q-opt').forEach(o => o.classList.remove('sel-1','sel-h','sel-0'));
         recalcLive();
     };
-    $('#btn-clear-form').onclick = () => { handleRoute(true); };
+    $('#btn-clear-form').onclick = () => {
+        try { localStorage.removeItem('liverpCallBackup_' + (State.user?.id||'unknown')); } catch {}
+        State.route = '';
+        handleRoute(true);
+    };
     $('#btn-save-call').onclick  = () => saveCallSessionAction('passed-or-fail');
     $('#btn-save-draft').onclick = () => saveCallSessionAction('draft');
     recalcLive();
+
+    // Restore saved call data for THIS user
+    try {
+        var bkKey = 'liverpCallBackup_' + (State.user?.id || 'unknown');
+        var bk = JSON.parse(localStorage.getItem(bkKey) || 'null');
+        if (bk && bk.name && (Date.now() - bk.ts) < 86400000) {
+            var nameEl = document.getElementById('c-name');
+            if (!nameEl || !nameEl.value.trim()) {
+                var bar = document.createElement('div');
+                bar.className = 'panel';
+                bar.setAttribute('style', 'background:var(--warning-soft);border:1px solid var(--warning);cursor:pointer;text-align:center;padding:14px;margin-bottom:16px');
+                bar.innerHTML = '<b style="color:var(--warning)">\u26a0\ufe0f \u041d\u0435\u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043d\u043d\u044b\u0439 \u043e\u0431\u0437\u0432\u043e\u043d: ' + escapeHtml(bk.name) + '</b><br><small class="muted">\u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u0447\u0442\u043e\u0431\u044b \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c</small>';
+                bar.onclick = function() {
+                    var f = {'c-name':bk.name,'c-discord':bk.discord,'c-game':bk.game,'c-age':bk.age,'c-tz':bk.tz,'c-date':bk.date,'c-trainer':bk.trainer,'c-replay-call':bk.replayCall,'c-replay-train':bk.replayTrain,'c-comment':bk.comment,'c-extra':bk.extra};
+                    for (var k in f) { var el = document.getElementById(k); if (el && f[k]) el.value = f[k]; }
+                    if (bk.answers) {
+                        for (var qid in bk.answers) {
+                            if (qid.endsWith('_c')) {
+                                var item2 = document.querySelector('.q-item[data-qid="'+qid.slice(0,-2)+'"]');
+                                if (item2) { var cm = item2.querySelector('[data-q-comment]'); if (cm) cm.value = bk.answers[qid]; }
+                            } else {
+                                var item3 = document.querySelector('.q-item[data-qid="'+qid+'"]');
+                                if (!item3) continue;
+                                item3.querySelectorAll('.q-opt').forEach(function(o){o.classList.remove('sel-1','sel-h','sel-0')});
+                                var sc = parseFloat(bk.answers[qid]);
+                                var opt2 = item3.querySelector('.q-opt[data-score="'+sc+'"]');
+                                if (opt2) opt2.classList.add(sc===1?'sel-1':sc===0.5?'sel-h':'sel-0');
+                            }
+                        }
+                    }
+                    recalcLive();
+                    bar.remove();
+                    toast('\u0414\u0430\u043d\u043d\u044b\u0435 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u044b', 'success');
+                };
+                var fp = view.querySelector('.panel');
+                if (fp) view.insertBefore(bar, fp); else view.prepend(bar);
+            }
+        }
+    } catch(e) { console.warn('Restore failed:', e); }
 }
 
 function getSelectedQuestionAnswers() {
@@ -816,11 +1242,21 @@ async function saveCallSessionAction(mode) {
             comment: $('#c-comment').value.trim() || null,
             extra_comment: $('#c-extra').value.trim() || null
         }, answers);
+        invalidateCache('calls');
+        try { localStorage.removeItem('liverpCallBackup_' + (State.user?.id||'unknown')); } catch {}
+        if (window._callAutoSave) clearInterval(window._callAutoSave);
         toast(`Обзвон сохранён (${pct}%, ${finalStatus})`,'success');
         handleRoute(true);
     } catch (e) {
         console.error(e);
-        toast('Ошибка сохранения: ' + e.message, 'danger', 5000);
+        // If auth error, try to refresh session and retry once
+        if (e.message && (e.message.includes('JWT') || e.message.includes('token') || e.message.includes('401') || e.message.includes('403'))) {
+            toast('Сессия истекла, обновляем... Попробуйте сохранить ещё раз.', 'warning', 5000);
+            try { await SB.client.auth.refreshSession(); } catch {}
+        } else {
+            toast('Ошибка сохранения: ' + e.message, 'danger', 8000);
+        }
+        // Do NOT call handleRoute - keep form data intact
     }
 }
 
@@ -828,7 +1264,7 @@ async function saveCallSessionAction(mode) {
 // 6. Конструктор вопросов
 // =====================================================================
 async function renderQuestions(view) {
-    const list = await loadQuestions(false);
+    const list = await cachedLoadQuestions(false);
     State.cache.questions = list;
     const cats = [...new Set(list.map(q => q.category))].sort();
     const canEdit = hasRole('owner','admin');
@@ -856,6 +1292,8 @@ async function renderQuestions(view) {
                 <div class="form-row"><label>Порядок</label><input id="nq-order" type="number" value="100"/></div>
                 <div class="form-row" style="grid-column:1/-1"><label>Текст вопроса *</label>
                     <textarea id="nq-text" rows="2"></textarea></div>
+                <div class="form-row" style="grid-column:1/-1"><label>Ответ-подсказка (видна только проводящему)</label>
+                    <textarea id="nq-answer" rows="2" placeholder="Правильный ответ для проводящего обзвон"></textarea></div>
             </div>
             <div style="margin-top:10px"><button class="btn btn-primary" id="btn-add-q">Добавить</button></div>
         </div>` : ''}
@@ -871,8 +1309,8 @@ async function renderQuestions(view) {
             </div>
             <div class="table-wrap">
                 <table class="data" id="q-table"><thead><tr>
-                    <th style="width:40px">№</th><th style="width:180px">Категория</th><th>Текст</th>
-                    <th style="width:70px">Порядок</th><th style="width:70px">Статус</th><th style="width:200px">Действия</th>
+                    <th style="width:40px">№</th><th style="width:160px">Категория</th><th>Текст</th><th>Ответ</th>
+                    <th style="width:60px">Порядок</th><th style="width:60px">Статус</th><th style="width:180px">Действия</th>
                 </tr></thead><tbody></tbody></table>
             </div>
         </div>
@@ -896,6 +1334,7 @@ async function renderQuestions(view) {
                 <td>${i+1}</td>
                 <td>${escapeHtml(r.category)}</td>
                 <td>${escapeHtml(r.question_text)}</td>
+                <td style="max-width:200px;font-size:12px;color:var(--text-muted)">${escapeHtml(r.answer_hint||'—')}</td>
                 <td class="num">${r.order_index}</td>
                 <td>${r.is_active ? '<span class="badge success">Вкл</span>' : '<span class="badge neutral">Выкл</span>'}</td>
                 <td class="actions">
@@ -906,7 +1345,7 @@ async function renderQuestions(view) {
                     ` : '—'}
                 </td>
             </tr>
-        `).join('') || `<tr><td colspan="6" class="muted">Нет вопросов</td></tr>`;
+        `).join('') || `<tr><td colspan="7" class="muted">Нет вопросов</td></tr>`;
         setCurrentCsv(rows.map(r => ({ category: r.category, question: r.question_text, order: r.order_index, active: r.is_active })), 'questions.csv');
     }
 
@@ -946,8 +1385,9 @@ async function renderQuestions(view) {
             const order = parseInt($('#nq-order').value) || 0;
             if (!category || !text) return toast('Заполните категорию и текст','warning');
             try {
-                const q = await createQuestion({ category, question_text: text, order_index: order, is_active: true });
-                list.unshift(q); $('#nq-text').value = ''; toast('Вопрос добавлен','success'); render();
+                const answer = $('#nq-answer').value.trim() || null;
+                const q = await createQuestion({ category, question_text: text, order_index: order, is_active: true, answer_hint: answer });
+                list.unshift(q); $('#nq-text').value = ''; $('#nq-answer').value = ''; toast('Вопрос добавлен','success'); render();
             } catch (e) { toast('Ошибка: '+e.message,'danger'); }
         };
         $('#bulk-on').onclick  = () => bulkToggleVisible(true);
@@ -986,8 +1426,10 @@ function editQuestionModal(q, onSave) {
         title: 'Редактирование вопроса',
         body: `
             <div class="form-row"><label>Категория</label><input id="eq-cat" value="${escapeHtml(q.category)}"/></div>
-            <div class="form-row" style="margin-top:8px"><label>Текст</label>
+            <div class="form-row" style="margin-top:8px"><label>Текст вопроса</label>
                 <textarea id="eq-text" rows="3">${escapeHtml(q.question_text)}</textarea></div>
+            <div class="form-row" style="margin-top:8px"><label>Ответ-подсказка</label>
+                <textarea id="eq-answer" rows="3" placeholder="Правильный ответ для проводящего обзвон">${escapeHtml(q.answer_hint||'')}</textarea></div>
             <div class="form-row" style="margin-top:8px"><label>Порядок</label>
                 <input id="eq-order" type="number" value="${q.order_index||0}"/></div>
         `,
@@ -1000,6 +1442,7 @@ function editQuestionModal(q, onSave) {
             const upd = await updateQuestion(q.id, {
                 category: $('#eq-cat').value.trim(),
                 question_text: $('#eq-text').value.trim(),
+                answer_hint: $('#eq-answer').value.trim() || null,
                 order_index: parseInt($('#eq-order').value)||0
             });
             onSave(upd); closeModal(); toast('Сохранено','success');
@@ -1011,8 +1454,7 @@ function editQuestionModal(q, onSave) {
 // 7. История обзвонов
 // =====================================================================
 async function renderHistory(view) {
-    const calls = await loadCallHistory();
-    State.cache.calls = calls;
+    const calls = await cachedLoadCalls();
     const interviewers = [...new Map(calls.filter(c=>c.interviewer).map(c => [c.interviewer.id, c.interviewer])).values()];
 
     view.innerHTML = `
@@ -1193,7 +1635,7 @@ async function showCallDetails(c) {
 // 8. Статистика
 // =====================================================================
 async function renderStats(view) {
-    const [calls, admins] = await Promise.all([loadCallHistory(), loadAdmins()]);
+    const [calls, admins] = await Promise.all([cachedLoadCalls(), cachedLoadAdmins()]);
     State.cache.calls = calls;
     const total = calls.length;
     const passed = calls.filter(c => c.status === 'passed').length;
@@ -1263,17 +1705,14 @@ async function renderStats(view) {
 // =====================================================================
 async function renderUsers(view) {
     if (!hasRole('owner','admin')) { view.innerHTML = `<div class="empty">Нет доступа</div>`; return; }
-    const [users, admins] = await Promise.all([loadUsers(), loadAdmins()]);
+    const [users, admins] = await Promise.all([cachedLoadUsers(), cachedLoadAdmins()]);
     State.cache.users = users; State.cache.admins = admins;
     const canManageUsers = hasRole('owner');
 
     view.innerHTML = `
-        <div class="liverp-hero">
-            <div>
-                <h2>Пользователи системы</h2>
-                <p class="muted">Аккаунты для входа в панель управления</p>
-            </div>
-            ${canManageUsers ? `<button class="btn btn-primary" id="btn-add-user">+ Создать пользователя</button>` : ''}
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+            <h2 style="margin:0">Пользователи</h2>
+            ${canManageUsers ? `<button class="btn btn-primary" id="btn-add-user">+ Создать</button>` : ''}
         </div>
         <div class="panel">
             <div class="toolbar">
@@ -1374,17 +1813,14 @@ function userProfileModal(u, admins, onSave) {
 // =====================================================================
 async function renderDepartments(view) {
     const [departments, admins, calls, discipline] = await Promise.all([
-        loadDepartments(), loadAdmins(true), loadCallHistory(), loadDisciplineRecords()
+        cachedLoadDepartments(), cachedLoadAdmins(true), cachedLoadCalls(), cachedLoadDiscipline()
     ]);
     const canEdit = hasRole('owner');
     const all = getDepartmentsFromAdmins(admins, departments);
 
     view.innerHTML = `
-        <div class="liverp-hero">
-            <div>
-                <h2>Отделы и разделы</h2>
-                <p class="muted">Структура администрации с распределением по отделам</p>
-            </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+            <h2 style="margin:0">Отделы и разделы</h2>
             ${canEdit ? `<button class="btn btn-primary" id="btn-add-dep">+ Создать отдел</button>` : ''}
         </div>
         <div id="dep-sections"></div>
@@ -1414,7 +1850,8 @@ async function renderDepartments(view) {
                         <span class="mini-chip ${dep.show_activity?'on':'off'}">активность</span>
                         <span class="mini-chip ${dep.show_punishments?'on':'off'}">наказания</span>
                     </div>
-                    ${canEdit && dep.id ? `<button class="btn btn-sm" data-act="edit">✎</button>` : ''}
+                    ${canEdit ? `<button class="btn btn-sm" data-act="edit">✎</button>` : ''}
+                    ${canEdit && dep.id ? `<button class="btn btn-sm btn-danger" data-act="delete">🗑</button>` : ''}
                 </div>
             </div>
             ${group.length ? `<div class="dep-members-wrap">
@@ -1435,7 +1872,7 @@ async function renderDepartments(view) {
                         ${dep.show_calls ? `<td class="num">${adminCallsCount(a, calls)}</td>` : ''}
                         ${dep.show_reports ? `<td class="num">${adminReportsCount(a)}</td>` : ''}
                         ${dep.show_punishments ? `<td class="num">${adminActivePunishments(a, discipline)}</td>` : ''}
-                        <td>${a.is_active ? '<span class="badge success">Активен</span>' : '<span class="badge neutral">Архив</span>'}</td>
+                        <td>${a.is_active ? '<span class="badge success">Активен</span>' : '<span class="badge warning">Заморожен</span>'}</td>
                     </tr>`).join('')}
                     </tbody></table>
                 </div>
@@ -1445,11 +1882,20 @@ async function renderDepartments(view) {
 
     if (canEdit) {
         $('#btn-add-dep').onclick = () => departmentModal(null, () => handleRoute(true));
-        sectionsEl.addEventListener('click', (e) => {
-            const btn = e.target.closest('button[data-act="edit"]'); if (!btn) return;
+        sectionsEl.addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-act]'); if (!btn) return;
             const card = btn.closest('.department-panel');
             const dep = departments.find(d => d.id === card.dataset.id) || all.find(d => d.name === card.dataset.name);
-            departmentModal(dep, () => handleRoute(true));
+            if (btn.dataset.act === 'edit') {
+                departmentModal(dep, () => handleRoute(true));
+            } else if (btn.dataset.act === 'delete') {
+                if (!dep?.id) return toast('Этот отдел не сохранён в базе','warning');
+                const members = admins.filter(a => a.is_active && (a.branch||'Общая администрация') === dep.name);
+                if (members.length > 0) return toast('В отделе есть ' + members.length + ' участник(ов). Переведите их.','warning');
+                if (!await confirmDialog('Удалить отдел ' + dep.name + '?')) return;
+                try { await deleteDepartment(dep.id); toast('Отдел удалён','success'); handleRoute(true); }
+                catch(er) { toast('Ошибка: '+er.message,'danger'); }
+            }
         });
     }
 }
@@ -1488,21 +1934,16 @@ function departmentModal(dep, onSave) {
 // =====================================================================
 async function renderAdmins(view) {
     const [admins, calls, discipline, departments] = await Promise.all([
-        loadAdmins(true), loadCallHistory(), loadDisciplineRecords(), loadDepartments()
+        cachedLoadAdmins(true), cachedLoadCalls(), cachedLoadDiscipline(), cachedLoadDepartments()
     ]);
     State.cache.admins = admins; State.cache.calls = calls; State.cache.discipline = discipline; State.cache.departments = departments;
     const canEdit = hasRole('owner','admin');
     const allDepartments = getDepartmentsFromAdmins(admins, departments);
 
     view.innerHTML = `
-        <div class="liverp-hero">
-            <div>
-                <h2>Состав администрации</h2>
-                <p class="muted">Ранги, должности, отделы, активность и статистика</p>
-            </div>
-            <div class="hero-actions">
-                ${canEdit ? `<button class="btn btn-primary" id="btn-add-admin">+ Добавить</button>` : ''}
-            </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+            <h2 style="margin:0">Состав администрации</h2>
+            ${canEdit ? `<button class="btn btn-primary" id="btn-add-admin">+ Добавить</button>` : ''}
         </div>
         <div class="panel">
             <div class="toolbar">
@@ -1541,11 +1982,12 @@ async function renderAdmins(view) {
                         <td>${a.rank ? `<span class="rank-pill">R${a.rank}</span>` : '—'}</td>
                         <td>${escapeHtml(a.custom_position || a.current_position || '—')}</td>
                         ${metricsCells(a, dep, calls, discipline)}
-                        <td>${a.is_active ? '<span class="badge success">Активен</span>' : '<span class="badge neutral">Архив</span>'}</td>
+                        <td>${a.is_active ? '<span class="badge success">Активен</span>' : '<span class="badge warning">Заморожен</span>'}</td>
                         <td class="actions">
                             <button class="btn btn-sm" data-act="view">👁</button>
                             ${canEdit?`<button class="btn btn-sm" data-act="edit">✎</button>`:''}
-                            ${canEdit?`<button class="btn btn-sm btn-danger" data-act="arch">📦</button>`:''}
+                            ${canEdit?`<button class="btn btn-sm" data-act="freeze">${a.is_active?'⏸ Заморозить':'▶ Разморозить'}</button>`:''}
+                            ${hasRole('owner')?`<button class="btn btn-sm btn-danger" data-act="del">🗑</button>`:''}
                         </td>
                     </tr>`).join('')}
                     </tbody></table>
@@ -1566,10 +2008,22 @@ async function renderAdmins(view) {
         const id = btn.closest('tr').dataset.id;
         const a = admins.find(x => x.id === id); if (!a) return;
         if (btn.dataset.act === 'edit') { adminModal(a, allDepartments, (upd) => { Object.assign(a, upd); render(); }); }
-        else if (btn.dataset.act === 'arch') {
-            if (!await confirmDialog('Архивировать администратора?')) return;
-            try { const upd = await archiveAdmin(id); Object.assign(a, upd); render(); toast('Архивирован','success'); }
-            catch(er){ toast('Ошибка: '+er.message,'danger'); }
+        else if (btn.dataset.act === 'freeze') {
+            const action = a.is_active ? 'Заморозить' : 'Разморозить';
+            if (!await confirmDialog(action + ' администратора ' + a.display_name + '?')) return;
+            try {
+                const upd = await updateAdmin(id, { is_active: !a.is_active });
+                Object.assign(a, upd); render();
+                toast(a.is_active ? 'Разморожен' : 'Заморожен', 'success');
+            } catch(er) { toast('Ошибка: '+er.message,'danger'); }
+        } else if (btn.dataset.act === 'del') {
+            if (!await confirmDialog('Удалить администратора ' + a.display_name + ' навсегда? Это удалит все связанные наказания, выплаты и повышения.')) return;
+            try {
+                await deleteAdmin(id);
+                admins.splice(admins.indexOf(a), 1);
+                render();
+                toast('Удалён', 'success');
+            } catch(er) { toast('Ошибка: '+er.message,'danger'); }
         } else if (btn.dataset.act === 'view') { showAdminCard(a, calls, discipline); }
     });
     render();
@@ -1589,8 +2043,9 @@ function adminModal(a, departments = [], onSave) {
                 <div class="form-row"><label>Ранг</label><select id="ad-rank"><option value="">—</option>${Array.from({length:11},(_,i)=>i+1).map(n=>`<option value="${n}" ${Number(a?.rank)===n?'selected':''}>Ранг ${n}</option>`).join('')}</select></div>
                 <div class="form-row"><label>Кастомная должность</label><input id="ad-custom-pos" value="${escapeHtml(a?.custom_position||'')}"/></div>
                 <div class="form-row"><label>Отдел</label>
-                    <input id="ad-branch" list="dep-list" value="${escapeHtml(a?.branch||'Общая администрация')}"/>
-                    <datalist id="dep-list">${depOptions.map(d=>`<option>${escapeHtml(d.name)}</option>`).join('')}</datalist></div>
+                    <select id="ad-branch">
+                        ${depOptions.map(d=>`<option value="${escapeHtml(d.name)}" ${(a?.branch||'Общая администрация')===d.name?'selected':''}>${escapeHtml(d.name)}</option>`).join('')}
+                    </select></div>
                 <div class="form-row"><label>Принятые рапорты</label><input id="ad-reports" type="number" min="0" value="${Number(a?.accepted_reports||0)}"/></div>
                 <div class="form-row"><label>Руководство</label><select id="ad-lead"><option value="false" ${!a?.is_leadership?'selected':''}>Нет</option><option value="true" ${a?.is_leadership?'selected':''}>Да</option></select></div>
                 <div class="form-row"><label>Дата вступления</label><input id="ad-joined" type="date" value="${a?.joined_at||''}"/></div>
@@ -1601,6 +2056,7 @@ function adminModal(a, departments = [], onSave) {
         `,
         footer: `<button class="btn" data-cancel>Отмена</button><button class="btn btn-primary" data-save>Сохранить</button>`
     });
+
     $('[data-cancel]').onclick = closeModal;
     $('[data-save]').onclick = async () => {
         const name = $('#ad-name').value.trim();
@@ -1609,7 +2065,7 @@ function adminModal(a, departments = [], onSave) {
             display_name: name, discord: $('#ad-discord').value.trim()||null, game_nick: $('#ad-game').value.trim()||null,
             rank: parseInt($('#ad-rank').value) || null, custom_position: $('#ad-custom-pos').value.trim() || null,
             current_position: $('#ad-custom-pos').value.trim() || ($('#ad-rank').value ? `Ранг ${$('#ad-rank').value}` : null),
-            branch: $('#ad-branch').value.trim()||'Общая администрация',
+            branch: $('#ad-branch').value||'Общая администрация',
             accepted_reports: parseInt($('#ad-reports').value) || 0, is_leadership: $('#ad-lead').value === 'true',
             joined_at: $('#ad-joined').value||null, last_promotion_at: $('#ad-prom').value||null,
             activity_percent: parseFloat($('#ad-act').value)||0, comment: $('#ad-com').value.trim()||null
@@ -1654,18 +2110,13 @@ function showAdminCard(a, calls, discipline) {
 // 11. Руководство
 // =====================================================================
 async function renderLeadership(view) {
-    const [admins, discipline, calls] = await Promise.all([loadAdmins(false), loadDisciplineRecords(), loadCallHistory()]);
+    const [admins, discipline, calls] = await Promise.all([cachedLoadAdmins(false), cachedLoadDiscipline(), cachedLoadCalls()]);
     const leaders = admins
         .filter(a => a.is_leadership || Number(a.rank) >= 9 || /руковод|глав|куратор|owner|директор/i.test(`${a.custom_position||''} ${a.current_position||''}`))
         .sort((a,b) => (Number(b.rank)||0) - (Number(a.rank)||0));
 
     view.innerHTML = `
-        <div class="liverp-hero">
-            <div>
-                <h2>👑 Руководство</h2>
-                <p class="muted">Руководящий состав администрации сервера</p>
-            </div>
-        </div>
+        <h2>👑 Руководство</h2>
         <div class="cards">
             <div class="card accent"><div class="card-label">Руководителей</div><div class="card-value">${leaders.length}</div></div>
             <div class="card success"><div class="card-label">Активных</div><div class="card-value">${leaders.filter(a=>a.is_active).length}</div></div>
@@ -1694,7 +2145,7 @@ async function renderLeadership(view) {
 // 12. Дисциплинарные наказания
 // =====================================================================
 async function renderDiscipline(view) {
-    const [records, admins] = await Promise.all([loadDisciplineRecords(), loadAdmins()]);
+    const [records, admins] = await Promise.all([cachedLoadDiscipline(), cachedLoadAdmins()]);
     State.cache.discipline = records; State.cache.admins = admins;
     const canEdit = hasRole('owner','admin');
 
@@ -1749,7 +2200,7 @@ async function renderDiscipline(view) {
                 <td>${fmtDate(r.expires_at)}</td>
                 <td>${statusBadge(r.status)}</td>
                 <td class="actions">
-                    ${canEdit?`<button class="btn btn-sm" data-act="edit">✎</button><button class="btn btn-sm" data-act="close">✓</button>`:''}
+                    ${canEdit?`<button class="btn btn-sm" data-act="edit">✎</button><button class="btn btn-sm" data-act="close">✓ Снять</button>${hasRole('owner')?'<button class="btn btn-sm btn-danger" data-act="del">🗑</button>':''}`:''}
                 </td>
             </tr>
         `).join('') || `<tr><td colspan="8" class="muted">Нет данных</td></tr>`;
@@ -1785,6 +2236,10 @@ async function renderDiscipline(view) {
                 if (newReason !== null) {
                     try { const upd = await updateDisciplineRecord(id, { reason: newReason }); Object.assign(r, upd); render(); } catch(er){ toast(er.message,'danger'); }
                 }
+            } else if (btn.dataset.act === 'del') {
+                if (!await confirmDialog('Удалить наказание навсегда?')) return;
+                try { await deleteDisciplineRecord(id); records.splice(records.indexOf(r), 1); render(); toast('Удалено','success'); }
+                catch(er){ toast('Ошибка: '+er.message,'danger'); }
             }
         });
     }
@@ -1796,7 +2251,7 @@ async function renderDiscipline(view) {
 // =====================================================================
 async function renderPromotion(view) {
     const [admins, departments, settings, calls, discipline] = await Promise.all([
-        loadAdmins(false), loadDepartments(), loadPromotionSettings(), loadCallHistory(), loadDisciplineRecords()
+        cachedLoadAdmins(false), cachedLoadDepartments(), cachedLoadPromotionSettings(), cachedLoadCalls(), cachedLoadDiscipline()
     ]);
     State.cache.admins = admins; State.cache.promotionSettings = settings;
     const readiness = await calculatePromotionReadiness(admins, settings, calls, discipline);
@@ -1804,8 +2259,8 @@ async function renderPromotion(view) {
     const allDepartments = getDepartmentsFromAdmins(admins, departments).filter(dep => admins.some(a => (a.branch||'Общая администрация') === dep.name));
 
     view.innerHTML = `
-        <div class="liverp-hero">
-            <div><h2>Система повышений</h2><p class="muted">Готовность администраторов по отделам</p></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+            <h2 style="margin:0">Система повышений</h2>
             <button class="btn btn-sm" id="btn-recalc">⟳ Обновить</button>
         </div>
         <div class="panel">
@@ -1834,7 +2289,7 @@ async function renderPromotion(view) {
             return `<div class="panel">
                 <div class="panel-header"><h3>${escapeHtml(dep.name)} <span class="badge accent">${group.length}</span></h3></div>
                 <div class="table-wrap"><table class="data"><thead><tr>
-                    <th>Админ</th><th>Ранг</th><th>Следующий</th><th class="num">Дней</th>
+                    <th>Админ</th><th>Ранг</th><th>Следующий</th><th class="num">Дней</th><th class="num">Рапорты</th>
                     <th>Готовность</th><th>Статус</th><th style="width:240px">Действия</th>
                 </tr></thead><tbody>
                 ${group.map(r => {
@@ -1925,7 +2380,7 @@ async function changeAdminRank(admin, newRank, customPosition, comment, directio
 // =====================================================================
 async function renderPromotionSettings(view) {
     if (!hasRole('owner','admin')) { view.innerHTML = `<div class="empty">Нет доступа</div>`; return; }
-    const settings = await loadPromotionSettings();
+    const settings = await cachedLoadPromotionSettings();
 
     view.innerHTML = `
         <h2>Настройки повышения</h2>
@@ -1936,8 +2391,8 @@ async function renderPromotionSettings(view) {
             <div class="table-wrap">
                 <table class="data"><thead><tr>
                     <th>Должность</th><th>Следующая</th><th class="num">Дней</th><th class="num">Обзвоны</th>
-                    <th class="num">Обучения</th><th class="num">Макс. нак.</th><th class="num">Актив. %</th>
-                    <th>Доп. условия</th><th style="width:80px">Действия</th>
+                    <th class="num">Обучения</th><th class="num">Рапорты</th><th class="num">Макс. нак.</th><th class="num">Актив. %</th>
+                    <th>Доп. условия</th><th style="width:80px"></th>
                 </tr></thead><tbody>
                 ${settings.map(s => `<tr data-id="${s.id}">
                     <td>${escapeHtml(s.position_name)}</td><td>${escapeHtml(s.next_position_name||'—')}</td>
@@ -1945,7 +2400,7 @@ async function renderPromotionSettings(view) {
                     <td class="num">${s.max_active_punishments}</td><td class="num">${s.required_activity_percent}%</td>
                     <td>${escapeHtml(s.additional_conditions||'—')}</td>
                     <td class="actions"><button class="btn btn-sm" data-act="edit">✎</button></td>
-                </tr>`).join('') || `<tr><td colspan="9" class="muted">Нет настроек</td></tr>`}
+                </tr>`).join('') || `<tr><td colspan="10" class="muted">Нет настроек</td></tr>`}
                 </tbody></table>
             </div>
         </div>
@@ -1953,7 +2408,7 @@ async function renderPromotionSettings(view) {
 
     if (hasRole('owner')) { $('#btn-add-set').onclick = () => promoSetModal(null, () => handleRoute(true)); }
     view.querySelector('tbody').addEventListener('click', (e) => {
-        const btn = e.target.closest('button[data-act="edit"]'); if (!btn) return;
+            const btn = e.target.closest('button[data-act]'); if (!btn) return;
         const s = settings.find(x => x.id === btn.closest('tr').dataset.id);
         promoSetModal(s, () => handleRoute(true));
     });
@@ -1970,6 +2425,7 @@ function promoSetModal(s, onSave) {
                 <div class="form-row"><label>Мин. дней</label><input id="ps-days" type="number" value="${s?.min_days||0}"/></div>
                 <div class="form-row"><label>Мин. обзвонов</label><input id="ps-calls" type="number" value="${s?.min_calls||0}"/></div>
                 <div class="form-row"><label>Мин. обучений</label><input id="ps-trn" type="number" value="${s?.min_trainings||0}"/></div>
+                <div class="form-row"><label>Мин. рапортов</label><input id="ps-rep" type="number" value="${s?.min_reports||0}"/></div>
                 <div class="form-row"><label>Макс. нак.</label><input id="ps-mp" type="number" value="${s?.max_active_punishments||0}"/></div>
                 <div class="form-row"><label>Мин. актив. %</label><input id="ps-act" type="number" value="${s?.required_activity_percent||0}"/></div>
                 <div class="form-row" style="grid-column:1/-1"><label>Доп. условия</label><textarea id="ps-cond" rows="2">${escapeHtml(s?.additional_conditions||'')}</textarea></div>
@@ -1978,7 +2434,7 @@ function promoSetModal(s, onSave) {
     });
     $('[data-cancel]').onclick = closeModal;
     $('[data-save]').onclick = async () => {
-        const payload = { position_name: $('#ps-pos').value.trim(), next_position_name: $('#ps-next').value.trim()||null, min_days: parseInt($('#ps-days').value)||0, min_calls: parseInt($('#ps-calls').value)||0, min_trainings: parseInt($('#ps-trn').value)||0, max_active_punishments: parseInt($('#ps-mp').value)||0, required_activity_percent: parseFloat($('#ps-act').value)||0, additional_conditions: $('#ps-cond').value.trim()||null };
+        const payload = { position_name: $('#ps-pos').value.trim(), next_position_name: $('#ps-next').value.trim()||null, min_days: parseInt($('#ps-days').value)||0, min_calls: parseInt($('#ps-calls').value)||0, min_trainings: parseInt($('#ps-trn').value)||0, min_reports: parseInt($('#ps-rep').value)||0, max_active_punishments: parseInt($('#ps-mp').value)||0, required_activity_percent: parseFloat($('#ps-act').value)||0, additional_conditions: $('#ps-cond').value.trim()||null };
         if (s) payload.id = s.id;
         if (!payload.position_name) return toast('Должность обязательна','warning');
         try { await savePromotionSettings(payload); onSave(); closeModal(); toast('Сохранено','success'); }
@@ -1990,7 +2446,8 @@ function promoSetModal(s, onSave) {
 // 15. Выплаты
 // =====================================================================
 async function renderPayments(view) {
-    const [payments, admins] = await Promise.all([loadPayments(), loadAdmins(false)]);
+    const [payments, admins, tariffs] = await Promise.all([cachedLoadPayments(), cachedLoadAdmins(false), cachedLoadTariffs()]);
+    State.cache.tariffs = tariffs;
     State.cache.payments = payments;
     const canEdit = hasRole('owner','admin');
     const weekAgo = new Date(Date.now() - 7*86400000).toISOString().slice(0,10);
@@ -2004,7 +2461,7 @@ async function renderPayments(view) {
             <div class="form-grid">
                 <div class="form-row"><label>Дата</label><input id="p-date" type="datetime-local" value="${new Date().toISOString().slice(0,16)}"/></div>
                 <div class="form-row"><label>Администратор *</label><select id="p-admin"><option value="">—</option>${admins.map(a=>`<option value="${a.id}">${escapeHtml(a.display_name)}</option>`).join('')}</select></div>
-                <div class="form-row"><label>Тип</label><select id="p-type"><option value="report">Репорт</option><option value="punishment">Наказание</option><option value="watch">Слежка</option><option value="delivery">Поставка</option><option value="robbery">Ограбление</option><option value="event">Мероприятие</option><option value="call">Обзвон</option><option value="training">Обучение</option><option value="online">Онлайн</option><option value="curator_bonus">Кураторка</option><option value="other">Другое</option></select></div>
+                <div class="form-row"><label>Тип</label><select id="p-type">${(State.cache.tariffs||[]).filter(t=>t.is_active).map(t=>'<option value="'+escapeHtml(t.key)+'">'+escapeHtml(t.name)+'</option>').join('')||'<option value="other">Другое</option>'}</select></div>
                 <div class="form-row"><label>Кол-во</label><input id="p-amount" type="number" value="1" min="0"/></div>
                 <div class="form-row"><label>Тариф</label><input id="p-tariff" type="number" value="20" min="0"/></div>
                 <div class="form-row"><label>Вычет %</label><input id="p-deduct" type="number" value="0" min="0" max="100"/></div>
@@ -2049,7 +2506,17 @@ async function renderPayments(view) {
             const fin = amount * tariff * mult * (1 - ded/100);
             $('#p-preview').textContent = fin.toFixed(0);
         };
-        $('#p-type').onchange = () => { $('#p-tariff').value = DEFAULT_TARIFFS[$('#p-type').value] ?? 0; recalc(); };
+        $('#p-type').onchange = () => {
+            const key = $('#p-type').value;
+            const tariff = (State.cache.tariffs||[]).find(t => t.key === key);
+            const isNight = $('#p-mult').value === '2';
+            if (tariff) {
+                $('#p-tariff').value = isNight && tariff.night_rate != null ? tariff.night_rate : tariff.base_rate || 0;
+            } else {
+                $('#p-tariff').value = DEFAULT_TARIFFS[key] ?? 0;
+            }
+            recalc();
+        };
         ['p-amount','p-tariff','p-mult','p-deduct'].forEach(id => $('#'+id).oninput = recalc);
         recalc();
         $('#btn-add-pay').onclick = async () => {
@@ -2073,6 +2540,8 @@ async function renderPayments(view) {
 }
 
 function activityLabel(t) {
+    const fromCache = (State.cache.tariffs||[]).find(tr => tr.key === t);
+    if (fromCache) return fromCache.name;
     return ({ report:'Репорт', punishment:'Наказание', watch:'Слежка', delivery:'Поставка', robbery:'Ограбление', event:'Мероприятие', call:'Обзвон', training:'Обучение', online:'Онлайн', curator_bonus:'Кураторка', other:'Другое' })[t] || t || '—';
 }
 
@@ -2082,22 +2551,37 @@ function activityLabel(t) {
 async function renderArchive(view) {
     if (!hasRole('owner','admin')) { view.innerHTML = `<div class="empty">Нет доступа</div>`; return; }
     const [admins, calls, discipline, questions, promotions, payments] = await Promise.all([
-        loadAdmins(true), loadCallHistory(), loadDisciplineRecords(), loadQuestions(false), loadPromotions(), loadPayments()
+        cachedLoadAdmins(true), cachedLoadCalls(), cachedLoadDiscipline(), cachedLoadQuestions(false), loadPromotions(), cachedLoadPayments()
     ]);
     const archAdmins = admins.filter(a => !a.is_active);
     const archProm = promotions.filter(p => p.status === 'rejected' || p.status === 'promoted');
 
+    const isOwner = hasRole('owner');
+
     view.innerHTML = `
         <h2>Архив</h2>
         <div class="cards">
-            <div class="card"><div class="card-label">Архивные админы</div><div class="card-value">${archAdmins.length}</div></div>
+            <div class="card"><div class="card-label">Замороженные</div><div class="card-value">${archAdmins.length}</div></div>
             <div class="card"><div class="card-label">История повышений</div><div class="card-value">${archProm.length}</div></div>
             <div class="card"><div class="card-label">Отключённые вопросы</div><div class="card-value">${questions.filter(q=>!q.is_active).length}</div></div>
         </div>
         <div class="panel">
-            <div class="panel-header"><h3>Архивные администраторы</h3></div>
-            <div class="table-wrap"><table class="data"><thead><tr><th>Имя</th><th>Ранг</th><th>Вступил</th><th>Комментарий</th></tr></thead><tbody>
-            ${archAdmins.map(a => `<tr><td>${escapeHtml(a.display_name)}</td><td>${escapeHtml(adminPositionLabel(a))}</td><td>${fmtDate(a.joined_at)}</td><td>${escapeHtml(a.comment||'')}</td></tr>`).join('') || `<tr><td colspan="4" class="muted">Пусто</td></tr>`}
+            <div class="panel-header"><h3>Замороженные администраторы</h3></div>
+            <div class="table-wrap"><table class="data" id="arch-admins"><thead><tr>
+                <th>Имя</th><th>Ранг</th><th>Discord</th><th>Вступил</th><th>Комментарий</th>
+                <th style="width:160px">Действия</th>
+            </tr></thead><tbody>
+            ${archAdmins.map(a => `<tr data-id="${a.id}">
+                <td>${escapeHtml(a.display_name)}</td>
+                <td>${escapeHtml(adminPositionLabel(a))}</td>
+                <td>${escapeHtml(a.discord||'—')}</td>
+                <td>${fmtDate(a.joined_at)}</td>
+                <td>${escapeHtml(a.comment||'')}</td>
+                <td class="actions">
+                    <button class="btn btn-sm btn-success" data-act="restore">▶ Восстановить</button>
+                    ${isOwner ? '<button class="btn btn-sm btn-danger" data-act="del">🗑 Удалить</button>' : ''}
+                </td>
+            </tr>`).join('') || `<tr><td colspan="6" class="muted">Пусто</td></tr>`}
             </tbody></table></div>
         </div>
         <div class="panel">
@@ -2107,8 +2591,200 @@ async function renderArchive(view) {
             </tbody></table></div>
         </div>
     `;
+
+    const archTable = $('#arch-admins tbody');
+    if (archTable) {
+        archTable.addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-act]'); if (!btn) return;
+            const id = btn.closest('tr').dataset.id;
+            const a = archAdmins.find(x => x.id === id); if (!a) return;
+            if (btn.dataset.act === 'restore') {
+                if (!await confirmDialog('Восстановить ' + a.display_name + '?')) return;
+                try {
+                    await updateAdmin(id, { is_active: true });
+                    toast('Восстановлен', 'success');
+                    handleRoute(true);
+                } catch(er) { toast('Ошибка: '+er.message,'danger'); }
+            } else if (btn.dataset.act === 'del') {
+                if (!await confirmDialog('Удалить ' + a.display_name + ' навсегда? Все связанные данные будут удалены.')) return;
+                try {
+                    await deleteAdmin(id);
+                    toast('Удалён', 'success');
+                    handleRoute(true);
+                } catch(er) { toast('Ошибка: '+er.message,'danger'); }
+            }
+        });
+    }
 }
 
+
+// =====================================================================
+// Прайс-лист
+// =====================================================================
+async function renderPricelist(view) {
+    const tariffs = await cachedLoadTariffs();
+    State.cache.tariffs = tariffs;
+    const canEdit = hasRole('owner') || hasPerm('can_edit_tariffs');
+
+    view.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+            <h2 style="margin:0">Прайс-лист</h2>
+            ${canEdit ? '<button class="btn btn-primary" id="btn-add-tariff">+ Добавить позицию</button>' : ''}
+        </div>
+        <div class="panel">
+            <div class="table-wrap">
+                <table class="data" id="tariff-table"><thead><tr>
+                    <th>Название</th><th>Ключ</th><th class="num">Ставка (день)</th><th class="num">Ставка (ночь)</th>
+                    <th>Описание</th><th>Статус</th>${canEdit ? '<th style="width:140px">Действия</th>' : ''}
+                </tr></thead><tbody>
+                ${tariffs.map(t => '<tr data-id="' + t.id + '">' +
+                    '<td><b>' + escapeHtml(t.name) + '</b></td>' +
+                    '<td><code>' + escapeHtml(t.key) + '</code></td>' +
+                    '<td class="num">' + (t.base_rate||0) + '</td>' +
+                    '<td class="num">' + (t.night_rate != null ? t.night_rate : '—') + '</td>' +
+                    '<td>' + escapeHtml(t.description||'') + '</td>' +
+                    '<td>' + (t.is_active ? '<span class="badge success">Вкл</span>' : '<span class="badge neutral">Выкл</span>') + '</td>' +
+                    (canEdit ? '<td class="actions"><button class="btn btn-sm" data-act="edit">✎</button><button class="btn btn-sm btn-danger" data-act="del">🗑</button></td>' : '') +
+                '</tr>').join('') || '<tr><td colspan="7" class="muted">Нет тарифов</td></tr>'}
+                </tbody></table>
+            </div>
+        </div>
+    `;
+
+    if (canEdit) {
+        const addBtn = $('#btn-add-tariff');
+        if (addBtn) addBtn.onclick = () => tariffModal(null, () => handleRoute(true));
+
+        $('#tariff-table tbody').addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-act]'); if (!btn) return;
+            const id = btn.closest('tr').dataset.id;
+            const t = tariffs.find(x => x.id === id);
+            if (btn.dataset.act === 'edit') {
+                tariffModal(t, () => handleRoute(true));
+            } else if (btn.dataset.act === 'del') {
+                if (!await confirmDialog('Удалить тариф ' + t.name + '?')) return;
+                try { await deleteTariff(id); toast('Удалён','success'); handleRoute(true); }
+                catch(er) { toast('Ошибка: '+er.message,'danger'); }
+            }
+        });
+    }
+}
+
+function tariffModal(t, onSave) {
+    const isNew = !t;
+    openModal({
+        title: isNew ? 'Новый тариф' : 'Редактирование тарифа',
+        body: '<div class="form-grid">' +
+            '<div class="form-row"><label>Название *</label><input id="tf-name" value="' + escapeHtml(t?.name||'') + '"/></div>' +
+            '<div class="form-row"><label>Ключ (латиница) *</label><input id="tf-key" value="' + escapeHtml(t?.key||'') + '" ' + (t ? 'readonly' : '') + ' placeholder="report, watch..."/></div>' +
+            '<div class="form-row"><label>Ставка (день)</label><input id="tf-rate" type="number" value="' + (t?.base_rate||0) + '"/></div>' +
+            '<div class="form-row"><label>Ставка (ночь)</label><input id="tf-night" type="number" value="' + (t?.night_rate||'') + '" placeholder="Пусто = нет ночной"/></div>' +
+            '<div class="form-row"><label>Порядок</label><input id="tf-order" type="number" value="' + (t?.sort_order||100) + '"/></div>' +
+            '<div class="form-row"><label>Активен</label><select id="tf-active"><option value="true" ' + (t?.is_active!==false?'selected':'') + '>Да</option><option value="false" ' + (t?.is_active===false?'selected':'') + '>Нет</option></select></div>' +
+            '<div class="form-row" style="grid-column:1/-1"><label>Описание</label><input id="tf-desc" value="' + escapeHtml(t?.description||'') + '"/></div>' +
+        '</div>',
+        footer: '<button class="btn" data-cancel>Отмена</button><button class="btn btn-primary" data-save>Сохранить</button>'
+    });
+    $('[data-cancel]').onclick = closeModal;
+    $('[data-save]').onclick = async () => {
+        const name = $('#tf-name').value.trim();
+        const key = $('#tf-key').value.trim();
+        if (!name || !key) return toast('Название и ключ обязательны','warning');
+        const nightVal = $('#tf-night').value.trim();
+        const payload = {
+            name, key,
+            base_rate: parseFloat($('#tf-rate').value)||0,
+            night_rate: nightVal !== '' ? parseFloat(nightVal) : null,
+            sort_order: parseInt($('#tf-order').value)||100,
+            is_active: $('#tf-active').value === 'true',
+            description: $('#tf-desc').value.trim()||null
+        };
+        if (t?.id) payload.id = t.id;
+        try { await saveTariff(payload); closeModal(); toast('Сохранено','success'); onSave(); }
+        catch(er) { toast('Ошибка: '+er.message,'danger'); }
+    };
+}
+
+// =====================================================================
+// Права ролей
+// =====================================================================
+async function renderPermissions(view) {
+    if (!hasRole('owner')) { view.innerHTML = '<div class="empty">Только owner может управлять правами</div>'; return; }
+    const perms = await loadRolePermissions();
+
+    const ALL_PAGES = Object.keys(ROUTES);
+    const ALL_PERMS = [
+        { key: 'can_create_admins', label: 'Создание администраторов' },
+        { key: 'can_edit_admins', label: 'Редактирование администраторов' },
+        { key: 'can_freeze_admins', label: 'Заморозка администраторов' },
+        { key: 'can_delete_admins', label: 'Удаление администраторов' },
+        { key: 'can_create_discipline', label: 'Создание наказаний' },
+        { key: 'can_delete_discipline', label: 'Удаление наказаний' },
+        { key: 'can_create_payments', label: 'Создание выплат' },
+        { key: 'can_delete_payments', label: 'Удаление выплат' },
+        { key: 'can_edit_questions', label: 'Редактирование вопросов' },
+        { key: 'can_delete_questions', label: 'Удаление вопросов' },
+        { key: 'can_edit_departments', label: 'Редактирование отделов' },
+        { key: 'can_delete_departments', label: 'Удаление отделов' },
+        { key: 'can_edit_calls', label: 'Редактирование обзвонов' },
+        { key: 'can_delete_calls', label: 'Удаление обзвонов' },
+        { key: 'can_manage_users', label: 'Управление пользователями' },
+        { key: 'can_edit_tariffs', label: 'Редактирование прайс-листа' },
+        { key: 'can_edit_promotions', label: 'Повышение/понижение' },
+        { key: 'can_edit_permissions', label: 'Управление правами' }
+    ];
+
+    const roles = ['admin','interviewer','viewer'];
+
+    view.innerHTML = '<h2>🔐 Права ролей</h2>' +
+        '<p class="muted" style="margin-bottom:20px">Owner имеет все права. Здесь настраиваются права для admin, interviewer и viewer.</p>' +
+        roles.map(role => {
+            const rp = perms.find(p => p.role_name === role);
+            const p = rp?.permissions || {};
+            const pages = p.pages || [];
+            return '<div class="panel" data-role="' + role + '">' +
+                '<div class="panel-header"><h3>' + roleBadge(role) + ' ' + role + '</h3>' +
+                '<button class="btn btn-primary btn-sm" data-save-role="' + role + '">Сохранить</button></div>' +
+                '<h4 style="margin:10px 0 8px">Доступ к страницам</h4>' +
+                '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px">' +
+                ALL_PAGES.map(pg => {
+                    const title = ROUTES[pg]?.title || pg;
+                    return '<label class="check-row"><input type="checkbox" data-page="' + pg + '" ' + (pages.includes(pg)?'checked':'') + '/> ' + escapeHtml(title) + '</label>';
+                }).join('') +
+                '</div>' +
+                '<h4 style="margin:16px 0 8px">Разрешения</h4>' +
+                '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px">' +
+                ALL_PERMS.map(perm => {
+                    return '<label class="check-row"><input type="checkbox" data-perm="' + perm.key + '" ' + (p[perm.key]?'checked':'') + '/> ' + escapeHtml(perm.label) + '</label>';
+                }).join('') +
+                '</div>' +
+            '</div>';
+        }).join('');
+
+    // Save handlers
+    roles.forEach(role => {
+        const saveBtn = view.querySelector('[data-save-role="' + role + '"]');
+        if (!saveBtn) return;
+        saveBtn.onclick = async () => {
+            const panel = view.querySelector('[data-role="' + role + '"]');
+            const pages = [];
+            panel.querySelectorAll('[data-page]').forEach(cb => {
+                if (cb.checked) pages.push(cb.dataset.page);
+            });
+            const permissions = { pages };
+            panel.querySelectorAll('[data-perm]').forEach(cb => {
+                permissions[cb.dataset.perm] = cb.checked;
+            });
+            try {
+                await saveRolePermissions({ role_name: role, permissions });
+                clearPermCache();
+                await loadPermCache();
+                applyRouteVisibility();
+                toast('Права ' + role + ' сохранены', 'success');
+            } catch(er) { toast('Ошибка: '+er.message,'danger'); }
+        };
+    });
+}
 // =====================================================================
 // 17. Настройки
 // =====================================================================
@@ -2145,8 +2821,20 @@ async function renderSettings(view) {
     $('#s-anim').onchange = () => saveAppearanceSettings({ animations: $('#s-anim').value });
     $('#s-bg').onchange = () => saveAppearanceSettings({ bgEffect: $('#s-bg').value });
     $('#s-density').onchange = () => saveAppearanceSettings({ density: $('#s-density').value });
-    $('#s-export-json').onclick = () => $('#btn-export-json').click();
-    $('#s-import-json').onclick = () => $('#btn-import-json').click();
+    $('#s-export-json').onclick = async () => {
+        if (!hasRole('owner','admin')) return toast('Недостаточно прав','danger');
+        toast('Готовим экспорт...');
+        try {
+            const dump = await exportData();
+            const name = `liverp-admin-dump-${new Date().toISOString().slice(0,10)}.json`;
+            downloadFile(name, JSON.stringify(dump, null, 2), 'application/json');
+            toast('JSON экспортирован','success');
+        } catch (e) { toast('Ошибка экспорта: '+e.message,'danger'); }
+    };
+    $('#s-import-json').onclick = () => {
+        if (!hasRole('owner')) return toast('Только owner может импортировать','danger');
+        $('#file-import').click();
+    };
     $('#s-clear-cache').onclick = () => {
         State.cache = { admins:[],questions:[],candidates:[],calls:[],discipline:[],promotionSettings:[],promotions:[],payments:[],users:[],departments:[] };
         toast('Кэш очищен','success');

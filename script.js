@@ -1,5 +1,5 @@
 /* =====================================================================
- * LiveRP Admin Control Panel — V2 FULL BUILD — 2026-06-07
+ * LiveRP Admin Control Panel — V4 FORM PROTECT — 2026-06-07
  * SPA на ванильном JS. Все обращения к БД — через supabase.js
  * ===================================================================== */
 
@@ -246,6 +246,20 @@ function normalizeAdminPayload(payload) {
 
 
 // Permission system cache
+// Global write wrapper - ensures session is alive before DB writes
+async function withSession(fn) {
+    try {
+        return await fn();
+    } catch (e) {
+        if (e.message && (e.message.includes('JWT') || e.message.includes('401') || e.message.includes('403'))) {
+            console.warn('[LiveRP] Auth error, refreshing session and retrying...');
+            try { await SB.client.auth.refreshSession(); } catch {}
+            return await fn(); // Retry once
+        }
+        throw e;
+    }
+}
+
 let _permCache = null;
 
 async function loadPermCache() {
@@ -457,9 +471,15 @@ async function bootstrap() {
 
     SB.client.auth.onAuthStateChange(async (event, session) => {
         if (event === 'SIGNED_OUT') {
-            showLogin();
+            // Only show login if we were actually logged in
+            if (State.user) {
+                toast('Сессия завершена. Войдите снова.', 'warning', 5000);
+                showLogin();
+            }
         } else if (event === 'TOKEN_REFRESHED') {
-            console.log('[LiveRP] Token refreshed silently');
+            console.log('[LiveRP] Token refreshed at ' + new Date().toLocaleTimeString());
+        } else if (event === 'SIGNED_IN') {
+            console.log('[LiveRP] Signed in');
         }
     });
 
@@ -473,6 +493,7 @@ async function bootstrap() {
             ts: Date.now(),
             userId: State.user?.id || 'unknown',
             name: nameEl.value,
+            interviewerName: State.profile?.display_name || State.profile?.email || '',
             discord: document.getElementById('c-discord')?.value || '',
             game: document.getElementById('c-game')?.value || '',
             age: document.getElementById('c-age')?.value || '',
@@ -494,19 +515,23 @@ async function bootstrap() {
         try { localStorage.setItem('liverpCallBackup_' + backup.userId, JSON.stringify(backup)); } catch {}
     }, 20000);
 
-    // Keep session alive: ping Supabase every 5 min to prevent token/DB sleep issues
+    // Keep session alive: refresh token + ping DB every 2 min
     setInterval(async () => {
         try {
+            // 1. Check and refresh auth session
             const { data } = await SB.client.auth.getSession();
             if (!data?.session) {
                 console.warn('[LiveRP] Session lost, refreshing...');
-                const { error } = await SB.client.auth.refreshSession();
-                if (error) console.error('[LiveRP] Session refresh failed:', error.message);
+                await SB.client.auth.refreshSession();
             }
+            // 2. Lightweight DB ping to prevent Supabase sleep
+            await SB.client.from('user_profiles').select('id').eq('id', State.user?.id || '').limit(1);
         } catch (e) {
-            console.warn('[LiveRP] Keep-alive ping failed:', e.message);
+            console.warn('[LiveRP] Keep-alive failed:', e.message);
+            // Try harder to restore session
+            try { await SB.client.auth.refreshSession(); } catch {}
         }
-    }, 300000); // 5 minutes
+    }, 120000); // 2 minutes
 }
 
 function showLogin() {
@@ -560,7 +585,20 @@ function bindGlobal() {
         showLogin();
     });
 
-    $('#btn-refresh').addEventListener('click', () => { State.cacheTime = {}; handleRoute(true); toast('Данные обновлены','success'); });
+    $('#btn-refresh').addEventListener('click', () => {
+        // If on calls page with active form, only refresh cache but don't reload page
+        if (State.route === 'calls') {
+            const nameField = document.getElementById('c-name');
+            if (nameField && nameField.value.trim()) {
+                State.cacheTime = {};
+                toast('Кэш обновлён. Форма обзвона не тронута.', 'success');
+                return;
+            }
+        }
+        State.cacheTime = {};
+        handleRoute(true);
+        toast('Данные обновлены', 'success');
+    });
 
     // Export/import доступны через раздел Настройки
     const fileImport = $('#file-import');
@@ -624,11 +662,15 @@ async function handleRoute(force=false) {
     const route = ROUTES[hash] ? hash : 'dashboard';
     console.log('[LiveRP] handleRoute:', route, 'force:', force, 'current:', State.route);
 
-    // Don't reload calls page if user is filling a form
-    if (State.route === 'calls' && route === 'calls' && !force) {
+    // Protect calls form from ANY reload (including refresh button)
+    if (State.route === 'calls' && route === 'calls') {
         const nameField = document.getElementById('c-name');
         if (nameField && nameField.value.trim()) {
-            return; // Protect form data
+            // Form has data - don't destroy it
+            if (force) {
+                toast('Обзвон в процессе. Данные формы сохранены.', 'info', 2000);
+            }
+            return;
         }
     }
 
@@ -1154,7 +1196,24 @@ async function renderCalls(view) {
                 var bar = document.createElement('div');
                 bar.className = 'panel';
                 bar.setAttribute('style', 'background:var(--warning-soft);border:1px solid var(--warning);cursor:pointer;text-align:center;padding:14px;margin-bottom:16px');
-                bar.innerHTML = '<b style="color:var(--warning)">\u26a0\ufe0f \u041d\u0435\u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043d\u043d\u044b\u0439 \u043e\u0431\u0437\u0432\u043e\u043d: ' + escapeHtml(bk.name) + '</b><br><small class="muted">\u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u0447\u0442\u043e\u0431\u044b \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c</small>';
+                var ageText = '';
+                try { var mins = Math.round((Date.now() - bk.ts) / 60000); ageText = mins < 60 ? mins + ' мин. назад' : Math.round(mins/60) + ' ч. назад'; } catch(ex){}
+                bar.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap">' +
+                    '<div><b>Незаконченный обзвон (' + escapeHtml(bk.name) + ')</b>' +
+                    '<br><small class="muted">' + ageText + ' — нажмите чтобы восстановить данные</small></div>' +
+                    '<button class="btn btn-warning btn-sm" style="pointer-events:none">Восстановить</button>' +
+                    '<button class="btn btn-sm dismiss-backup" style="pointer-events:auto" onclick="event.stopPropagation()">Удалить</button>' +
+                '</div>';
+                // Dismiss button
+                var dismissBtn = bar.querySelector('.dismiss-backup');
+                if (dismissBtn) {
+                    dismissBtn.onclick = function(ev) {
+                        ev.stopPropagation();
+                        try { localStorage.removeItem(bkKey); } catch(ex){}
+                        bar.remove();
+                        toast('Черновик удалён', 'info');
+                    };
+                }
                 bar.onclick = function() {
                     var f = {'c-name':bk.name,'c-discord':bk.discord,'c-game':bk.game,'c-age':bk.age,'c-tz':bk.tz,'c-date':bk.date,'c-trainer':bk.trainer,'c-replay-call':bk.replayCall,'c-replay-train':bk.replayTrain,'c-comment':bk.comment,'c-extra':bk.extra};
                     for (var k in f) { var el = document.getElementById(k); if (el && f[k]) el.value = f[k]; }
@@ -1175,7 +1234,7 @@ async function renderCalls(view) {
                     }
                     recalcLive();
                     bar.remove();
-                    toast('\u0414\u0430\u043d\u043d\u044b\u0435 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u044b', 'success');
+                    toast('Данные обзвона восстановлены', 'success');
                 };
                 var fp = view.querySelector('.panel');
                 if (fp) view.insertBefore(bar, fp); else view.prepend(bar);
@@ -1222,7 +1281,23 @@ async function saveCallSessionAction(mode) {
         toast('Нужно оценить хотя бы один вопрос.', 'warning'); return;
     }
     const finalStatus = mode === 'draft' ? 'draft' : calcStatus(pct);
-    try {
+
+    // Ensure session is alive before saving
+    async function ensureSession() {
+        try {
+            const { data } = await SB.client.auth.getSession();
+            if (!data?.session) {
+                console.warn('[LiveRP] No session, refreshing...');
+                const { error } = await SB.client.auth.refreshSession();
+                if (error) throw error;
+            }
+        } catch (e) {
+            console.error('[LiveRP] Session refresh failed:', e);
+            throw new Error('Сессия истекла. Перезайдите в систему.');
+        }
+    }
+
+    async function doSave() {
         const cand = await findOrCreateCandidate({
             display_name: name,
             discord: $('#c-discord').value.trim() || null,
@@ -1242,21 +1317,32 @@ async function saveCallSessionAction(mode) {
             comment: $('#c-comment').value.trim() || null,
             extra_comment: $('#c-extra').value.trim() || null
         }, answers);
-        invalidateCache('calls');
-        try { localStorage.removeItem('liverpCallBackup_' + (State.user?.id||'unknown')); } catch {}
-        if (window._callAutoSave) clearInterval(window._callAutoSave);
-        toast(`Обзвон сохранён (${pct}%, ${finalStatus})`,'success');
-        handleRoute(true);
-    } catch (e) {
-        console.error(e);
-        // If auth error, try to refresh session and retry once
-        if (e.message && (e.message.includes('JWT') || e.message.includes('token') || e.message.includes('401') || e.message.includes('403'))) {
-            toast('Сессия истекла, обновляем... Попробуйте сохранить ещё раз.', 'warning', 5000);
-            try { await SB.client.auth.refreshSession(); } catch {}
-        } else {
-            toast('Ошибка сохранения: ' + e.message, 'danger', 8000);
+    }
+
+    // Try save, on auth error retry once after session refresh
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+            await ensureSession();
+            await doSave();
+            invalidateCache('calls');
+            try { localStorage.removeItem('liverpCallBackup_' + (State.user?.id||'unknown')); } catch {}
+            if (window._callAutoSave) clearInterval(window._callAutoSave);
+            toast('Обзвон сохранён (' + pct + '%, ' + finalStatus + ')', 'success');
+            State.route = '';
+            handleRoute(true);
+            return; // Success - exit
+        } catch (e) {
+            console.error('[LiveRP] Save attempt ' + attempt + ' failed:', e);
+            if (attempt === 1 && e.message && (e.message.includes('JWT') || e.message.includes('token') || e.message.includes('401') || e.message.includes('403') || e.message.includes('refresh'))) {
+                toast('Обновляем сессию, повторяем сохранение...', 'warning', 3000);
+                try { await SB.client.auth.refreshSession(); } catch {}
+                continue; // Retry
+            }
+            // Final failure
+            toast('Ошибка сохранения: ' + e.message + '. Данные формы сохранены.', 'danger', 10000);
+            // Do NOT call handleRoute - keep form data intact
+            return;
         }
-        // Do NOT call handleRoute - keep form data intact
     }
 }
 
